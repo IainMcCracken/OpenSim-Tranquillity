@@ -38,385 +38,390 @@ using System.Reflection;
 using SkiaSharp;
 
 
-namespace OpenSim.Services.MapImageService
+namespace OpenSim.Services.MapImageService;
+
+public class MapImageService : IMapImageService
 {
-    public class MapImageService : IMapImageService
+    private static readonly ILog m_log = LogManager.GetLogger(MethodBase.GetCurrentMethod().DeclaringType);
+    private readonly string LogHeader = "[MAP IMAGE SERVICE]";
+    private const int ZOOM_LEVELS = 8;
+    private const int IMAGE_WIDTH = 256;
+    private const int JPEG_QUALITY = 80;
+
+    private static string m_TilesStoragePath = "maptiles";
+
+    private static readonly object m_Sync = new();
+    private static bool m_Initialized = false;
+    private static readonly SKColor m_Watercolor = new(29, 72, 96);
+    private static byte[] m_WaterJPEGBytes = null;
+
+    public MapImageService(IConfigSource config)
     {
-        private static readonly ILog m_log = LogManager.GetLogger( MethodBase.GetCurrentMethod().DeclaringType);
-#pragma warning disable 414
-        private string LogHeader = "[MAP IMAGE SERVICE]";
-#pragma warning restore 414
+        lock (m_Sync)
+        {
+            if (!m_Initialized)
+            {
+                m_Initialized = true;
+                m_log.Debug("[MAP IMAGE SERVICE]: Starting MapImage service");
 
-        private const int ZOOM_LEVELS = 8;
-        private const int IMAGE_WIDTH = 256;
-        private const int HALF_WIDTH = 128;
-        private const int JPEG_QUALITY = 80;
+                IConfig serviceConfig = config.Configs["MapImageService"];
+                if (serviceConfig is not null)
+                {
+                    m_TilesStoragePath = serviceConfig.GetString("TilesStoragePath", m_TilesStoragePath);
 
-        private static string m_TilesStoragePath = "maptiles";
+                    using var tempWaterBitmap = new SKBitmap(IMAGE_WIDTH, IMAGE_WIDTH, SKColorType.Bgra8888, SKAlphaType.Opaque);
+                    tempWaterBitmap.Erase(m_Watercolor);
 
-        private static object m_Sync = new object();
-        private static bool m_Initialized = false;
-        private static SKColor m_Watercolor = new SKColor(29, 72, 96);
-        private static SKBitmap m_WaterBitmap = null;
-        private static byte[] m_WaterJPEGBytes = null;
+                    using var tempWaterData = tempWaterBitmap.Encode(SKEncodedImageFormat.Jpeg, JPEG_QUALITY);
+                    m_WaterJPEGBytes = tempWaterData.ToArray();
+                }
+            }
+        }
+    }
 
-        public MapImageService(IConfigSource config)
+    #region Module API
+
+    public bool AddMapTile(int x, int y, byte[] imageData, UUID scopeID, out string reason)
+    {
+        reason = string.Empty;
+
+        SKBitmap inputImage;
+        byte[] jpegBytes;
+
+        // Don't trust unknown bytes from the Internet. You don't know where they've been!
+        // First, are they a valid image?
+        if (!SkiaImageUtils.TryDecodeFromBytes(imageData, out inputImage) && !SkiaImageUtils.TryDecodeFromJ2K(imageData, out inputImage))
+        {
+            reason = $"The submitted data is not an image file";
+            m_log.Warn($"{LogHeader}: {reason}");
+            return false;
+        }
+
+        // Note SKBitmaps hold unmanaged data, so must be disposed of properly.
+        using (inputImage)
+        {
+            // Ok, the image is valid. Is it the right size?
+            if (inputImage.Width != IMAGE_WIDTH || inputImage.Height != IMAGE_WIDTH)
+            {
+                reason = $"The image is not 256x256. It is {inputImage.Width}x{inputImage.Height}";
+                m_log.Warn($"{LogHeader}: {reason}");
+                return false;
+            }
+
+            // And does it cleanly encode back to regular JPEG? Note, we also normalize all level-1 tiles to the same JPEG quality.
+            if (!SkiaImageUtils.TryEncodeToJpeg(inputImage, JPEG_QUALITY, out jpegBytes))
+            {
+                reason = $"Failed to re-encode the submitted data as JPEG.";
+                m_log.Warn($"{LogHeader}: {reason}");
+                return false;
+            }
+        }
+
+        // We have a valid byte[] with a normalized JPEG in it. Now we can write it to disk.
+        string fileName = GetTileFileName(1, x, y, scopeID);
+        try
         {
             lock (m_Sync)
             {
-                if (!m_Initialized)
-                {
-                    m_Initialized = true;
-                    m_log.Debug("[MAP IMAGE SERVICE]: Starting MapImage service");
-
-                    IConfig serviceConfig = config.Configs["MapImageService"];
-                    if (serviceConfig is not null)
-                    {
-                        m_TilesStoragePath = serviceConfig.GetString("TilesStoragePath", m_TilesStoragePath);
-                        
-                        // Memory cache JPEG tile with just water
-                        m_WaterBitmap = new SKBitmap(IMAGE_WIDTH, IMAGE_WIDTH, SKColorType.Rgb888x, SKAlphaType.Opaque);
-                        FillImage(m_WaterBitmap, m_Watercolor);
-                        
-                        using (MemoryStream ms = new MemoryStream())
-                        using (SKImage image = SKImage.FromBitmap(m_WaterBitmap))
-                        {
-                            if (image != null)
-                            {
-                                using (SKData encoded = image.Encode(SKEncodedImageFormat.Jpeg, JPEG_QUALITY))
-                                {
-                                    if (encoded != null)
-                                    {
-                                        encoded.SaveTo(ms);
-                                        ms.Seek(0, SeekOrigin.Begin);
-                                        m_WaterJPEGBytes = ms.ToArray();
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                CreateScopeFolder(scopeID);
+                File.WriteAllBytes(fileName, jpegBytes);
             }
         }
-
-        // ... existing code ...
-
-        public bool AddMapTile(int x, int y, byte[] imageData, UUID scopeID, out string reason)
+        catch (Exception e)
         {
-            reason = string.Empty;
-            ReadOnlySpan<char> path = GetFolder(scopeID);
-            string fileName = GetFileName(1, x, y, path);
+            m_log.Warn($"{LogHeader}: Unable to save incoming image to {fileName}. Message: {e.Message}");
+            reason = e.Message;
+            return false;
+        }
+
+        // If the write succeeded, we can queue this tile up for producing the relevant zoomed map tiles.
+        return UpdateMultiResolutionFiles(x, y, scopeID);
+    }
+
+    public bool RemoveMapTile(int x, int y, UUID scopeID, out string reason)
+    {
+        reason = string.Empty;
+        string fileName = GetTileFileName(1, x, y, scopeID);
+
+        try
+        {
             lock (m_Sync)
             {
-                try
-                {
-                     File.WriteAllBytes(fileName, imageData);
-                }
-                catch (Exception e)
-                {
-                    m_log.WarnFormat("[MAP IMAGE SERVICE]: Unable to save image file {0}: {1}", fileName, e);
-                    reason = e.Message;
-                    return false;
-                }
-            }
-
-            return UpdateMultiResolutionFiles(x, y, scopeID);
-        }
-
-        public bool RemoveMapTile(int x, int y, UUID scopeID, out string reason)
-        {
-            reason = string.Empty;
-            string fileName = GetFileName(1, x, y, scopeID);
-
-            lock (m_Sync)
-            {
-                try
-                {
-                    File.Delete(fileName);
-                }
-                catch (Exception e)
-                {
-                    m_log.Warn($"[MAP IMAGE SERVICE]: Unable to save delete file {fileName}: {e.Message}");
-                    reason = e.Message;
-                    return false;
-                }
-            }
-            return UpdateMultiResolutionFiles(x, y, scopeID);
-        }
-
-        // When large varregions start up, they can send piles of new map tiles. This causes
-        //    this multi-resolution routine to be called a zillion times an causes much CPU
-        //    time to be spent creating multi-resolution tiles that will be replaced when
-        //    the next maptile arrives.
-        private struct MapToMultiRez
-        {
-            public int x;
-            public int y;
-            public UUID scopeID;
-        }
-
-        private readonly Queue<MapToMultiRez> m_MultiRezToBuild = new Queue<MapToMultiRez>();
-
-        private bool UpdateMultiResolutionFiles(int x, int y, UUID scopeID)
-        {
-            lock (m_MultiRezToBuild)
-            {
-                // m_log.DebugFormat("{0} UpdateMultiResolutionFilesAsync: scheduling update for <{1},{2}>", LogHeader, x, y);
-                m_MultiRezToBuild.Enqueue(
-                    new MapToMultiRez
-                    {
-                        x = x,
-                        y = y,
-                        scopeID = scopeID
-                    }
-                );
-
-                if (m_MultiRezToBuild.Count == 1)
-                    Util.FireAndForget(DoUpdateMultiResolutionFilesAsync);
-            }
-
-            return true;
-        }
-
-        private void DoUpdateMultiResolutionFilesAsync(object o)
-        {
-            // let acumulate large region tiles
-            Thread.Sleep(60 * 1000); // large regions take time to upload tiles
-
-            while (true)
-            {
-                MapToMultiRez toMultiRez;
-                lock (m_MultiRezToBuild)
-                {
-                    if(!m_MultiRezToBuild.TryDequeue(out toMultiRez))
-                        return;
-                }
-
-                ReadOnlySpan<char> path = GetFolder(toMultiRez.scopeID);
-                for (int zoomLevel = 2; zoomLevel <= ZOOM_LEVELS; zoomLevel++)
-                {
-                    if (!CreateTile(zoomLevel, toMultiRez.x, toMultiRez.y, path))
-                    {
-                        m_log.WarnFormat("[MAP IMAGE SERVICE]: Unable to create tile for {0},{1} at zoom level {1}", toMultiRez.x, toMultiRez.y, zoomLevel);
-                        return;
-                    }
-                }
-                Thread.Sleep(50); // slow things a bit
+                File.Delete(fileName);
             }
         }
-
-        public byte[] GetMapTile(string fileName, UUID scopeID, out string format)
+        catch (Exception e)
         {
-            //m_log.DebugFormat("[MAP IMAGE SERVICE]: Getting map tile {0}", fileName);
-            string fullName = Path.Combine(m_TilesStoragePath, scopeID.ToString());
-            fullName = Path.Combine(fullName, fileName);
+            m_log.Warn($"{LogHeader}: Unable to delete file {fileName}. Reason: {e.Message}");
+            reason = e.Message;
+            return false;
+        }
+
+        // Queue up the deletion for regenerating zoomed map tiles.
+        return UpdateMultiResolutionFiles(x, y, scopeID);
+    }
+
+    public byte[] GetMapTile(string fileName, UUID scopeID, out string format)
+    {
+        string fullName = Path.Combine(GetScopeFolder(scopeID), fileName);
+
+        if (File.Exists(fullName))
+        {
+            format = Path.GetExtension(fullName).ToLower();
             try
             {
                 lock (m_Sync)
-                { 
-                    format = Path.GetExtension(fileName).ToLower();
-                    //m_log.DebugFormat("[MAP IMAGE SERVICE]: Found file {0}, extension {1}", fileName, format);
-                    return File.ReadAllBytes(fullName);
-                }
-            }
-
-            catch
-            {
-                format = ".jpg";
-                return m_WaterJPEGBytes is null ? Array.Empty<byte>() : m_WaterJPEGBytes;
-            }
-        }
-
-        private string GetFileName(int zoomLevel, int x, int y, UUID scopeID)
-        {
-            string path = Path.Combine(m_TilesStoragePath, scopeID.ToString());
-            return Path.Combine(path, string.Format("map-{0}-{1}-{2}-objects.{3}", zoomLevel, x, y, "jpg"));
-        }
-
-        private string GetFileName(int zoomLevel, int x, int y, ReadOnlySpan<char> path)
-        {
-            return Path.Combine(path.ToString(), string.Format("map-{0}-{1}-{2}-objects.{3}", zoomLevel, x, y, "jpg"));
-        }
-
-        private string GetFolder(UUID scopeID)
-        {
-            string path = Path.Combine(m_TilesStoragePath, scopeID.ToString());
-            Directory.CreateDirectory(path);
-            return path;
-        }
-
-        private SKBitmap GetInputTileImage(string fileName)
-        {
-            try
-            {
-                lock(m_Sync)
                 {
-                    if (File.Exists(fileName))
+                    using var fs = File.OpenRead(fullName);
+                    if (IsMaptileJpeg(fs))
                     {
-                        SKBitmap bm = SKBitmap.Decode(fileName);
-                        if (bm == null)
-                        {
-                            m_log.Error($"[MAP IMAGE SERVICE]: failed to decode map tile {fileName}");
-                            return null;
-                        }
-                        if (bm.Width != IMAGE_WIDTH || bm.Height != IMAGE_WIDTH || bm.ColorType != SKColorType.Rgb888x)
-                        {
-                            m_log.Error($"[MAP IMAGE SERVICE]: invalid map tile {fileName}: {bm.Width}, {bm.Height}, {bm.ColorType}");
-                            bm.Dispose();
-                            return null;
-                        }
-                        return bm;
-                    }
-                }
-            }
-            catch (Exception e)
-            {
-                m_log.Warn($"[MAP IMAGE SERVICE]: Unable to read image data from {fileName}: {e.Message}");
-            }
-
-            return null;
-        }
-
-        private bool CreateTile(int zoomLevel, int inx, int iny, ReadOnlySpan<char> path)
-        {
-            int previusLevel = zoomLevel - 1;
-            int prevStep = 1 << previusLevel - 1;
-
-            int mask = unchecked((int)0xffffffff) << previusLevel;
-
-            // Convert x and y to the bottom left of current tile
-            int x = inx & mask;
-            int y = iny & mask;
-
-            int ntiles = 0;
-            SKBitmap output = m_WaterBitmap.Copy(); // Was Bitmap.Clone()
-
-            SKBitmap input = GetInputTileImage(GetFileName(previusLevel, x, y, path));
-            if (input is not null)
-            {
-                ImageCopyResampled(output, input, 0, HALF_WIDTH);
-                input.Dispose();
-                ntiles++;
-            }
-            input = GetInputTileImage(GetFileName(previusLevel, x + prevStep, y, path));
-            if (input is not null)
-            {
-                ImageCopyResampled(output, input, HALF_WIDTH, HALF_WIDTH);
-                input.Dispose();
-                ntiles++;
-            }
-            input = GetInputTileImage(GetFileName(previusLevel, x, y + prevStep, path));
-            if (input is not null)
-            {
-                ImageCopyResampled(output, input, 0, 0);
-                input.Dispose();
-                ntiles++;
-            }
-            input = GetInputTileImage(GetFileName(previusLevel, x + prevStep, y + prevStep, path));
-            if (input is not null)
-            {
-                ImageCopyResampled(output, input, HALF_WIDTH, 0);
-                input.Dispose();
-                ntiles++;
-            }
-
-            string outputFile = GetFileName(zoomLevel, x, y, path);
-            try
-            {
-                lock(m_Sync)
-                {
-                    File.Delete(outputFile);
-                    if (ntiles > 0)
-                    {
-                        using (SKImage image = SKImage.FromBitmap(output))
-                        using (SKData encoded = image.Encode(SKEncodedImageFormat.Jpeg, JPEG_QUALITY))
-                        using (FileStream fs = File.Create(outputFile))
-                        {
-                            encoded.SaveTo(fs);
-                        }
-                    }
-                }
-            }
-            catch (Exception e)
-            {
-                m_log.Warn($"[MAP IMAGE SERVICE]: Oops on saving {outputFile} {e.Message}");
-            }
-
-            output.Dispose();
-            return true;
-        }
-
-        #region Image utilities
-
-        private void FillImage(SKBitmap bm, SKColor c)
-        {
-            IntPtr pixelsAddr = bm.GetPixels();
-            unsafe
-            {
-                byte* ptr = (byte*)pixelsAddr;
-                byte r = c.Red;
-                byte g = c.Green;
-                byte b = c.Blue;
-                
-                int totalPixels = bm.Width * bm.Height;
-                for (int i = 0; i < totalPixels; i++)
-                {
-                    *ptr++ = b;
-                    *ptr++ = g;
-                    *ptr++ = r;
-                    ptr++; // Skip the X byte in Rgb888x
-                }
-            }
-        }
-
-        private void ImageCopyResampled(SKBitmap output, SKBitmap input, int destX, int destY)
-        {
-            try
-            {
-                IntPtr srcAddr = input.GetPixels();
-                IntPtr dstAddr = output.GetPixels();
-                
-                int srcStride = input.RowBytes;
-                int dstStride = output.RowBytes;
-                
-                unsafe
-                {
-                    byte* srcPointer = (byte*)srcAddr;
-                    byte* srcPointer2 = srcPointer + srcStride;
-                    byte* dstPointer = (byte*)dstAddr + destY * dstStride + 4 * destX;
-                    
-                    for (int y = 0; y < HALF_WIDTH; y++)
-                    {
-                        byte* dxptr = dstPointer;
-                        for (int i = 0; i < HALF_WIDTH; i++)
-                        {
-                            // Blue
-                            int t = srcPointer[0] + srcPointer[4] + srcPointer2[0] + srcPointer2[4];
-                            dxptr[0] = (byte)(t >> 2);
-                            
-                            // Green
-                            t = srcPointer[1] + srcPointer[5] + srcPointer2[1] + srcPointer2[5];
-                            dxptr[1] = (byte)(t >> 2);
-
-                            // Red
-                            t = srcPointer[2] + srcPointer[6] + srcPointer2[2] + srcPointer2[6];
-                            dxptr[2] = (byte)(t >> 2);
-
-                            srcPointer += 8; // skip one point (4 bytes per pixel * 2)
-                            srcPointer2 += 8;
-                            dxptr += 4; // Rgb888x is 4 bytes per pixel
-                        }
-                        srcPointer += srcStride; // skip extra line
-                        srcPointer2 += srcStride;
-                        dstPointer += dstStride;
+                        using var ms = new MemoryStream();
+                        fs.CopyTo(ms);
+                        return ms.ToArray();
                     }
                 }
             }
             catch
             {
+                // Intentionally left blank.
+                // The code in the try clause should not throw anything, as the server is known to have access to the file when
+                // File.Exists() returns true. But, if the file read fails for any reason, we need to drop down below and return an
+                // ocean tile.
             }
         }
 
-        #endregion
+        format = ".jpg";
+        // Make a copy, so callers cannot mutate our private field.
+        return [.. m_WaterJPEGBytes];
     }
+
+    #endregion
+
+    #region File and filesystem Utils
+
+    private static string GetScopeFolder(UUID scopeID)
+    {
+        return Path.Combine(m_TilesStoragePath, scopeID.ToString());
+    }
+
+    private static string CreateScopeFolder(UUID scopeID)
+    {
+        string path = GetScopeFolder(scopeID);
+        Directory.CreateDirectory(path);
+        return path;
+    }
+
+    private static string GetTileFileName(int zoomLevel, int x, int y, UUID scopeID)
+    {
+        return Path.Combine(GetScopeFolder(scopeID), $"map-{zoomLevel}-{x}-{x}-objects.jpg");
+    }
+
+    private static string GetTileFileName(int zoomLevel, int x, int y, string path)
+    {
+        return Path.Combine(path, $"map-{zoomLevel}-{x}-{y}-objects.jpg");
+    }
+
+    private static bool IsMaptileJpeg(FileStream fs)
+    {
+        byte[] sig = new byte[3];
+        fs.Read(sig, 0, 3);
+        if (!SkiaImageUtils.IsJpeg(sig)) return false;
+
+        var info = SKBitmap.DecodeBounds(fs);
+        return info.Width == IMAGE_WIDTH && info.Height == IMAGE_WIDTH;
+    }
+
+    #endregion
+
+    #region Zoom Tile Generation
+
+    private bool CreateZoomTile(int zoomLevel, int inx, int iny, string path)
+    {
+        int previousLevel = zoomLevel - 1;
+        int prevStep = 1 << previousLevel - 1;
+
+        int mask = unchecked((int)0xffffffff) << previousLevel;
+
+        // Convert x and y to the bottom left of current tile
+        int x = inx & mask;
+        int y = iny & mask;
+
+        bool didTiles = false;
+
+        using var tempBitmap = new SKBitmap(IMAGE_WIDTH * 2, IMAGE_WIDTH * 2, SKColorType.Bgra8888, SKAlphaType.Opaque);
+        using var tempCanvas = new SKCanvas(tempBitmap);
+        tempCanvas.Clear(m_Watercolor);
+
+        using (var bottomLeft = GetExistingTileImage(previousLevel, x, y, path))
+            if (bottomLeft is not null)
+            {
+                tempCanvas.DrawBitmap(bottomLeft, 0, IMAGE_WIDTH);
+                didTiles = true;
+            }
+        using (var bottomRight = GetExistingTileImage(previousLevel, x + prevStep, y, path))
+            if (bottomRight is not null)
+            {
+                tempCanvas.DrawBitmap(bottomRight, IMAGE_WIDTH, IMAGE_WIDTH);
+                didTiles = true;
+            }
+        using (var topLeft = GetExistingTileImage(previousLevel, x, y + prevStep, path))
+            if (topLeft is not null)
+            {
+                tempCanvas.DrawBitmap(topLeft, 0, 0);
+                didTiles = true;
+            }
+        using (var topRight = GetExistingTileImage(previousLevel, x + prevStep, y + prevStep, path))
+            if (topRight is not null)
+            {
+                tempCanvas.DrawBitmap(topRight, IMAGE_WIDTH, 0);
+                didTiles = true;
+            }
+
+        string outputFile = GetTileFileName(zoomLevel, x, y, path);
+
+        if (didTiles)
+        {
+            using var newTileBitmap = tempBitmap.Resize(new SKImageInfo(IMAGE_WIDTH, IMAGE_WIDTH, SKColorType.Bgra8888, SKAlphaType.Opaque), new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.None));
+            using var newTileEncoded = newTileBitmap.Encode(SKEncodedImageFormat.Jpeg, JPEG_QUALITY);
+
+            try
+            {
+                lock (m_Sync)
+                {
+                    using var fs = File.Create(outputFile);
+                    newTileEncoded.SaveTo(fs);
+                }
+            }
+            catch (Exception e)
+            {
+                m_log.Warn($"{LogHeader}: Unable to save new zoom map tile {outputFile}. Reason: {e.Message}");
+                return false;
+            }
+        }
+        else
+        {
+            try
+            {
+                lock (m_Sync)
+                    File.Delete(outputFile);
+            }
+            catch (Exception e)
+            {
+                m_log.Warn($"{LogHeader}: Failed to delete unneeded zoom map tile {outputFile}. Reason: {e.Message}");
+            }
+        }
+
+        return true;
+    }
+
+    private SKBitmap GetExistingTileImage(int zoomlevel, int x, int y, string path)
+    {
+        string fileName = GetTileFileName(zoomlevel, x, y, path);
+
+        if (File.Exists(fileName))
+        {
+            try
+            {
+                lock (m_Sync)
+                {
+                    using var fs = File.OpenRead(fileName);
+                    if (IsMaptileJpeg(fs))
+                    {
+                        SKBitmap output = SKBitmap.Decode(fs);
+                        if (output is null)
+                        {
+                            m_log.Error($"{LogHeader}: Failed to decode map tile {fileName}");
+                            return null;
+                        }
+                        if (output.Width != IMAGE_WIDTH || output.Height != IMAGE_WIDTH)
+                        {
+                            m_log.Error($"{LogHeader}: Image has the wrong dimensions: {output.Width}x{output.Height}");
+                            output.Dispose();
+                            return null;
+                        }
+
+                        return output;
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                m_log.Error($"{LogHeader}: Unable to read map tile from {fileName}", e);
+            }
+        }
+
+        return null;
+    }
+
+    #endregion
+
+    #region Zoom tile fire and forget thread
+
+    // TODO IAIN -- This thread can be fixed up to consume less resources, and be more deterministic. Arbitrary delays and hope
+    // are not The Way. More intelligent batching, triggering, and separation of batches are The Way.
+
+    // ... existing code ...
+
+    // When large varregions start up, they can send piles of new map tiles. This causes
+    //    this multi-resolution routine to be called a zillion times an causes much CPU
+    //    time to be spent creating multi-resolution tiles that will be replaced when
+    //    the next maptile arrives.
+    private struct MapToMultiRez
+    {
+        public int x;
+        public int y;
+        public UUID scopeID;
+    }
+
+    private readonly Queue<MapToMultiRez> m_MultiRezToBuild = new Queue<MapToMultiRez>();
+
+    private bool UpdateMultiResolutionFiles(int x, int y, UUID scopeID)
+    {
+        lock (m_MultiRezToBuild)
+        {
+            // m_log.DebugFormat("{0} UpdateMultiResolutionFilesAsync: scheduling update for <{1},{2}>", LogHeader, x, y);
+            m_MultiRezToBuild.Enqueue(
+                new MapToMultiRez
+                {
+                    x = x,
+                    y = y,
+                    scopeID = scopeID
+                }
+            );
+
+            if (m_MultiRezToBuild.Count == 1)
+                Util.FireAndForget(DoUpdateMultiResolutionFilesAsync);
+        }
+
+        return true;
+    }
+
+    private void DoUpdateMultiResolutionFilesAsync(object o)
+    {
+        // let acumulate large region tiles
+        Thread.Sleep(60 * 1000); // large regions take time to upload tiles
+
+        while (true)
+        {
+            MapToMultiRez toMultiRez;
+            lock (m_MultiRezToBuild)
+            {
+                if (!m_MultiRezToBuild.TryDequeue(out toMultiRez))
+                    return;
+            }
+
+            string path = CreateScopeFolder(toMultiRez.scopeID);
+            for (int zoomLevel = 2; zoomLevel <= ZOOM_LEVELS; zoomLevel++)
+            {
+                if (!CreateZoomTile(zoomLevel, toMultiRez.x, toMultiRez.y, path))
+                {
+                    m_log.WarnFormat("[MAP IMAGE SERVICE]: Unable to create tile for {0},{1} at zoom level {1}", toMultiRez.x, toMultiRez.y, zoomLevel);
+                    return;
+                }
+            }
+            Thread.Sleep(50); // slow things a bit
+        }
+    }
+
+    #endregion
 }
