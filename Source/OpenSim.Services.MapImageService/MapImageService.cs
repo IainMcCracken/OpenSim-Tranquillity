@@ -88,6 +88,8 @@ public class MapImageService : IMapImageService
         SKBitmap inputImage;
         byte[] jpegBytes;
 
+        m_log.Debug($"{LogHeader}: Received tile at {x},{y}");
+
         // Don't trust unknown bytes from the Internet. You don't know where they've been!
         // First, are they a valid image?
         if (!SkiaImageUtils.TryDecodeFromBytes(imageData, out inputImage) && !SkiaImageUtils.TryDecodeFromJ2K(imageData, out inputImage))
@@ -125,6 +127,8 @@ public class MapImageService : IMapImageService
             {
                 CreateScopeFolder(scopeID);
                 File.WriteAllBytes(fileName, jpegBytes);
+
+                m_log.Debug($"{LogHeader}: Saved file {fileName}");
             }
         }
         catch (Exception e)
@@ -213,7 +217,7 @@ public class MapImageService : IMapImageService
 
     private static string GetTileFileName(int zoomLevel, int x, int y, UUID scopeID)
     {
-        return Path.Combine(GetScopeFolder(scopeID), $"map-{zoomLevel}-{x}-{x}-objects.jpg");
+        return Path.Combine(GetScopeFolder(scopeID), $"map-{zoomLevel}-{x}-{y}-objects.jpg");
     }
 
     private static string GetTileFileName(int zoomLevel, int x, int y, string path)
@@ -277,7 +281,7 @@ public class MapImageService : IMapImageService
                 didTiles = true;
             }
 
-        string outputFile = GetTileFileName(zoomLevel, x, y, path);
+        string outputFile = GetTileFileName(zoomLevel, inx, iny, path);
 
         if (didTiles)
         {
@@ -398,6 +402,7 @@ public class MapImageService : IMapImageService
 
     private void DoUpdateMultiResolutionFilesAsync(object o)
     {
+        m_log.Debug($"{LogHeader}: Thread triggered.");
         // let acumulate large region tiles
         Thread.Sleep(60 * 1000); // large regions take time to upload tiles
 
@@ -413,6 +418,7 @@ public class MapImageService : IMapImageService
             string path = CreateScopeFolder(toMultiRez.scopeID);
             for (int zoomLevel = 2; zoomLevel <= ZOOM_LEVELS; zoomLevel++)
             {
+                m_log.Debug($"{LogHeader}: Create zoom tile level {zoomLevel} for {toMultiRez.x}-{toMultiRez.y}");
                 if (!CreateZoomTile(zoomLevel, toMultiRez.x, toMultiRez.y, path))
                 {
                     m_log.WarnFormat("[MAP IMAGE SERVICE]: Unable to create tile for {0},{1} at zoom level {1}", toMultiRez.x, toMultiRez.y, zoomLevel);
