@@ -36,6 +36,7 @@ using OpenSim.Framework;
 using OpenSim.Services.Interfaces;
 using System.Reflection;
 using SkiaSharp;
+using System.Reflection.Metadata;
 
 
 namespace OpenSim.Services.MapImageService;
@@ -176,9 +177,9 @@ public class MapImageService : IMapImageService
             {
                 lock (m_Sync)
                 {
-                    using var fs = File.OpenRead(fullName);
-                    if (IsMaptileJpeg(fs))
+                    if (IsMaptileJpeg(fullName))
                     {
+                        using var fs = File.OpenRead(fullName);
                         using var ms = new MemoryStream();
                         fs.CopyTo(ms);
                         return ms.ToArray();
@@ -225,14 +226,36 @@ public class MapImageService : IMapImageService
         return Path.Combine(path, $"map-{zoomLevel}-{x}-{y}-objects.jpg");
     }
 
-    private static bool IsMaptileJpeg(FileStream fs)
+    private bool IsMaptileJpeg(string fileName)
     {
-        byte[] sig = new byte[3];
-        fs.Read(sig, 0, 3);
-        if (!SkiaImageUtils.IsJpeg(sig)) return false;
+        m_log.Debug($"{LogHeader}: Check {fileName} is jpeg");
+        if (File.Exists(fileName))
+        {
+            using var fs = File.OpenRead(fileName);
+            byte[] sig = new byte[3];
+            long cursor = 999;
+            fs.Read(sig, 0, 3);
+            if (!SkiaImageUtils.IsJpeg(sig)) return false;
 
-        var info = SKBitmap.DecodeBounds(fs);
-        return info.Width == IMAGE_WIDTH && info.Height == IMAGE_WIDTH;
+            m_log.Debug($"{LogHeader}: is jpeg ok, now check dimensions");
+
+            cursor = fs.Seek(0, SeekOrigin.Begin);
+
+            m_log.Debug($"{LogHeader}: Sought to {cursor} after signature check");
+
+            var info = SKBitmap.DecodeBounds(fs);
+
+            bool sizeGood = info.Width == IMAGE_WIDTH && info.Height == IMAGE_WIDTH;
+
+            m_log.Debug($"{LogHeader}: size ok? {sizeGood}");
+
+            return sizeGood;
+        }
+        else
+        {
+            m_log.Debug($"{LogHeader}: can't check, as {fileName} doesn't exist!");
+            return false;
+        }
     }
 
     #endregion
@@ -281,7 +304,7 @@ public class MapImageService : IMapImageService
                 didTiles = true;
             }
 
-        string outputFile = GetTileFileName(zoomLevel, inx, iny, path);
+        string outputFile = GetTileFileName(zoomLevel, x, y, path);
 
         if (didTiles)
         {
@@ -294,6 +317,7 @@ public class MapImageService : IMapImageService
                 {
                     using var fs = File.Create(outputFile);
                     newTileEncoded.SaveTo(fs);
+                    m_log.Debug($"{LogHeader}: saved file {outputFile}");
                 }
             }
             catch (Exception e)
@@ -322,15 +346,17 @@ public class MapImageService : IMapImageService
     {
         string fileName = GetTileFileName(zoomlevel, x, y, path);
 
+        m_log.Debug($"{LogHeader}: Asked for {fileName}");
+
         if (File.Exists(fileName))
         {
             try
             {
                 lock (m_Sync)
                 {
-                    using var fs = File.OpenRead(fileName);
-                    if (IsMaptileJpeg(fs))
+                    if (IsMaptileJpeg(fileName))
                     {
+                        using var fs = File.OpenRead(fileName);
                         SKBitmap output = SKBitmap.Decode(fs);
                         if (output is null)
                         {
@@ -354,6 +380,7 @@ public class MapImageService : IMapImageService
             }
         }
 
+        m_log.Debug($"{LogHeader}: not found.");
         return null;
     }
 
@@ -404,7 +431,8 @@ public class MapImageService : IMapImageService
     {
         m_log.Debug($"{LogHeader}: Thread triggered.");
         // let acumulate large region tiles
-        Thread.Sleep(60 * 1000); // large regions take time to upload tiles
+        Thread.Sleep(1000); // large regions take time to upload tiles
+        // Thread.Sleep(60 * 1000); // large regions take time to upload tiles
 
         while (true)
         {
