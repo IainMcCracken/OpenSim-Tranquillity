@@ -1,3 +1,12 @@
+/*
+ * Copyright (C) 2026 Iain McCracken
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ *
+ */
+
 using SkiaSharp;
 using CoreJ2K.Skia;
 using CoreJ2K.Configuration;
@@ -6,12 +15,22 @@ namespace OpenSim.Framework;
 
 public static class SkiaImageUtils
 {
+    /// <summary>
+    /// Your basic lossless JPEG2000 encoder configuration
+    /// </summary>
     private static readonly J2KEncoderConfiguration encoderConfiguration = new J2KEncoderConfiguration().WithLossless().WithFileFormat(true);
 
+    /// <summary>
+    /// Try to encode a bitmap to JPEG2000, lossless.
+    /// </summary>
+    /// <param name="inputImage">a Skia bitmap</param>
+    /// <param name="encoded">(output) JPEG2000 bytes</param>
+    /// <returns>true if the encode succeeded</returns>
     public static bool TryEncodeToJ2K(SKBitmap inputImage, out byte[] encoded)
     {
         encoded = null;
 
+        // Bypass the exception throwing null check in SkiaSharp
         if (inputImage is null) return false;
 
         using var normalized = NormalizeColorType(inputImage);
@@ -20,10 +39,17 @@ public static class SkiaImageUtils
         return encoded is not null && encoded.Length != 0;
     }
 
+    /// <summary>
+    /// Try to encode a bitmap to PNG.
+    /// </summary>
+    /// <param name="inputImage">a Skia bitmap</param>
+    /// <param name="encoded">(output) PNG bytes</param>
+    /// <returns>true if the encoding succeeded.</returns>
     public static bool TryEncodeToPng(SKBitmap inputImage, out byte[] encoded)
     {
         encoded = null;
 
+        // Bypass the exception throwing null check in SkiaSharp
         if (inputImage is null) return false;
 
         using var normalized = NormalizeColorType(inputImage);
@@ -33,10 +59,18 @@ public static class SkiaImageUtils
         return encoded is not null && encoded.Length != 0;
     }
 
+    /// <summary>
+    /// Try to encode a bitmap to JPEG
+    /// </summary>
+    /// <param name="inputImage">a Skia bitmap</param>
+    /// <param name="quality">encoding quality</param>
+    /// <param name="encoded">(output) JPEG bytes</param>
+    /// <returns>true if the encoding succeeded</returns>
     public static bool TryEncodeToJpeg(SKBitmap inputImage, int quality, out byte[] encoded)
     {
         encoded = null;
 
+        // Bypass the exception throwing null check in SkiaSharp
         if (inputImage is null) return false;
 
         using var normalized = NormalizeColorType(inputImage);
@@ -46,6 +80,12 @@ public static class SkiaImageUtils
         return encoded is not null && encoded.Length != 0;
     }
 
+    /// <summary>
+    /// Try to decode a JPEG2000
+    /// </summary>
+    /// <param name="inData">bytes of a JPEG2000 image</param>
+    /// <param name="decoded">(output) a Skia bitmap with 32-bit bgra pixel format</param>
+    /// <returns>true if the decode succeeded</returns>
     public static bool TryDecodeFromJ2K(byte[] inData, out SKBitmap decoded)
     {
         decoded = null;
@@ -60,6 +100,12 @@ public static class SkiaImageUtils
         return true;
     }
 
+    /// <summary>
+    /// Try to decode an image (other than a JPEG2000)
+    /// </summary>
+    /// <param name="inData">bytes of an image</param>
+    /// <param name="decoded">(output) a Skia bitmap with 32-bit bgra pixel format</param>
+    /// <returns>true if the decode succeeded</returns>
     public static bool TryDecodeFromBytes(byte[] inData, out SKBitmap decoded)
     {
         decoded = null;
@@ -74,25 +120,43 @@ public static class SkiaImageUtils
         return true;
     }
 
-
-
-
+    /// <summary>
+    /// Normalize a bitmap to the bgra8888 pixel format.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// SkiaSharp doesn't always play nice with encoding and decoding. The 32-bit bgra pixel format does play nice with encoding
+    /// both JPEG and JPEG2000. It is also the pixel format provided by the Warp3D library.
+    /// </para>
+    /// <para>
+    /// Note: The input bitmap is not disposed of!
+    /// </para>
+    /// </remarks>
+    /// <param name="input">An input bbitmap</param>
+    /// <returns>A normalized bitmap</returns>
     public static SKBitmap NormalizeColorType(SKBitmap input)
     {
+        // Bypass the null-check in SKBitmap.Copy which throws an exception.
         if (input is null) return null;
         return input.Copy(SKColorType.Bgra8888);
     }
 
-    public static bool IsJpeg(byte[] checkMe)
+    /// <summary>
+    /// Check if a file is *not* a JPEG
+    /// </summary>
+    /// <param name="checkMe">At least the first 3 bytes of the file</param>
+    /// <returns>true if the file is definitely not a JPEG</returns>
+    public static bool IsNotJpeg(byte[] checkMe)
     {
-        if (checkMe is null || checkMe.Length < 3) return false;
+        if (checkMe is null || checkMe.Length < 3) return true;
 
-        return checkMe[0] == 0xFF && checkMe[1] == 0xD8 && checkMe[2] == 0xFF;
+        return checkMe[0] != 0xFF || checkMe[1] != 0xD8 || checkMe[2] != 0xFF;
     }
 
     // ************************************************************
 
     // Old method to be replaced.
+
     public static SKBitmap ResizeImageSolid(SKBitmap image, int width, int height)
     {
         SKBitmap result = new(width, height, SKColorType.Rgb888x, SKAlphaType.Opaque);

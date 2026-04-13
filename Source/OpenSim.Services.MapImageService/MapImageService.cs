@@ -36,8 +36,6 @@ using OpenSim.Framework;
 using OpenSim.Services.Interfaces;
 using System.Reflection;
 using SkiaSharp;
-using System.Reflection.Metadata;
-
 
 namespace OpenSim.Services.MapImageService;
 
@@ -63,7 +61,7 @@ public class MapImageService : IMapImageService
             if (!m_Initialized)
             {
                 m_Initialized = true;
-                m_log.Debug("[MAP IMAGE SERVICE]: Starting MapImage service");
+                m_log.Debug("[MAP IMAGE SERVICE]: Starting MapImage service...");
 
                 IConfig serviceConfig = config.Configs["MapImageService"];
                 if (serviceConfig is not null)
@@ -89,25 +87,23 @@ public class MapImageService : IMapImageService
         SKBitmap inputImage;
         byte[] jpegBytes;
 
-        m_log.Debug($"{LogHeader}: Received tile at {x},{y}");
-
         // Don't trust unknown bytes from the Internet. You don't know where they've been!
-        // First, are they a valid image?
+        // First, are they a valid image? We'll take anything SkiaSharp can decode, or a JPEG2000.
         if (!SkiaImageUtils.TryDecodeFromBytes(imageData, out inputImage) && !SkiaImageUtils.TryDecodeFromJ2K(imageData, out inputImage))
         {
             reason = $"The submitted data is not an image file";
-            m_log.Warn($"{LogHeader}: {reason}");
+            m_log.Warn($"{LogHeader}: Add map tile at {x},{y} failed: {reason}");
             return false;
         }
 
         // Note SKBitmaps hold unmanaged data, so must be disposed of properly.
         using (inputImage)
         {
-            // Ok, the image is valid. Is it the right size?
+            // Ok, the image is valid. Is it the right size? It has to be 256x256.
             if (inputImage.Width != IMAGE_WIDTH || inputImage.Height != IMAGE_WIDTH)
             {
                 reason = $"The image is not 256x256. It is {inputImage.Width}x{inputImage.Height}";
-                m_log.Warn($"{LogHeader}: {reason}");
+                m_log.Warn($"{LogHeader}: Add map tile at {x},{y} failed: {reason}");
                 return false;
             }
 
@@ -115,7 +111,7 @@ public class MapImageService : IMapImageService
             if (!SkiaImageUtils.TryEncodeToJpeg(inputImage, JPEG_QUALITY, out jpegBytes))
             {
                 reason = $"Failed to re-encode the submitted data as JPEG.";
-                m_log.Warn($"{LogHeader}: {reason}");
+                m_log.Warn($"{LogHeader}: Add map tile at {x},{y} failed: {reason}");
                 return false;
             }
         }
@@ -128,14 +124,12 @@ public class MapImageService : IMapImageService
             {
                 CreateScopeFolder(scopeID);
                 File.WriteAllBytes(fileName, jpegBytes);
-
-                m_log.Debug($"{LogHeader}: Saved file {fileName}");
             }
         }
         catch (Exception e)
         {
-            m_log.Warn($"{LogHeader}: Unable to save incoming image to {fileName}. Message: {e.Message}");
             reason = e.Message;
+            m_log.Warn($"{LogHeader}: Unable to save incoming image to {fileName}. Message: {reason}");
             return false;
         }
 
@@ -157,8 +151,8 @@ public class MapImageService : IMapImageService
         }
         catch (Exception e)
         {
-            m_log.Warn($"{LogHeader}: Unable to delete file {fileName}. Reason: {e.Message}");
             reason = e.Message;
+            m_log.Warn($"{LogHeader}: Unable to delete file {fileName}. Reason: {reason}");
             return false;
         }
 
@@ -195,6 +189,7 @@ public class MapImageService : IMapImageService
             }
         }
 
+        // The file either didn't exist, or was not what we expected, so return an empty ocean tile instead.
         format = ".jpg";
         // Make a copy, so callers cannot mutate our private field.
         return [.. m_WaterJPEGBytes];
@@ -204,11 +199,21 @@ public class MapImageService : IMapImageService
 
     #region File and filesystem Utils
 
+    /// <summary>
+    /// Get the map tiles directory for the given scope UUID
+    /// </summary>
+    /// <param name="scopeID"></param>
+    /// <returns>the folder pathname</returns>
     private static string GetScopeFolder(UUID scopeID)
     {
         return Path.Combine(m_TilesStoragePath, scopeID.ToString());
     }
 
+    /// <summary>
+    /// Get the map tiles directory for the given scope UUID, creating it if needed
+    /// </summary>
+    /// <param name="scopeID"></param>
+    /// <returns>the folder pathname</returns>
     private static string CreateScopeFolder(UUID scopeID)
     {
         string path = GetScopeFolder(scopeID);
@@ -216,46 +221,56 @@ public class MapImageService : IMapImageService
         return path;
     }
 
+    /// <summary>
+    /// Tack the filename onto the scope directory
+    /// </summary>
+    /// <param name="zoomLevel"></param>
+    /// <param name="x"></param>
+    /// <param name="y"></param>
+    /// <param name="scopeID"></param>
+    /// <returns>the file full pathname</returns>
     private static string GetTileFileName(int zoomLevel, int x, int y, UUID scopeID)
     {
         return Path.Combine(GetScopeFolder(scopeID), $"map-{zoomLevel}-{x}-{y}-objects.jpg");
     }
 
+    /// <summary>
+    /// Tack the filename onto the given path
+    /// </summary>
+    /// <param name="zoomLevel"></param>
+    /// <param name="x"></param>
+    /// <param name="y"></param>
+    /// <param name="path"></param>
+    /// <returns>the file full pathname</returns>
     private static string GetTileFileName(int zoomLevel, int x, int y, string path)
     {
         return Path.Combine(path, $"map-{zoomLevel}-{x}-{y}-objects.jpg");
     }
 
+    /// <summary>
+    /// Check if a given map tile file is a JPEG and is 256x256.
+    /// </summary>
+    /// <param name="fileName">the file</param>
+    /// <returns>true if the tile is a 256x256 JPEG</returns>
     private bool IsMaptileJpeg(string fileName)
     {
-        m_log.Debug($"{LogHeader}: Check {fileName} is jpeg");
         if (File.Exists(fileName))
         {
             using var fs = File.OpenRead(fileName);
             byte[] sig = new byte[3];
-            long cursor = 999;
+
             fs.Read(sig, 0, 3);
-            if (!SkiaImageUtils.IsJpeg(sig)) return false;
+            if (SkiaImageUtils.IsNotJpeg(sig)) return false;
 
-            m_log.Debug($"{LogHeader}: is jpeg ok, now check dimensions");
-
-            cursor = fs.Seek(0, SeekOrigin.Begin);
-
-            m_log.Debug($"{LogHeader}: Sought to {cursor} after signature check");
+            // Rewind the stream for DecodeBounds
+            fs.Seek(0, SeekOrigin.Begin);
 
             var info = SKBitmap.DecodeBounds(fs);
 
-            bool sizeGood = info.Width == IMAGE_WIDTH && info.Height == IMAGE_WIDTH;
-
-            m_log.Debug($"{LogHeader}: size ok? {sizeGood}");
-
-            return sizeGood;
+            return info.Width == IMAGE_WIDTH && info.Height == IMAGE_WIDTH;
         }
-        else
-        {
-            m_log.Debug($"{LogHeader}: can't check, as {fileName} doesn't exist!");
-            return false;
-        }
+
+        return false;
     }
 
     #endregion
@@ -275,10 +290,12 @@ public class MapImageService : IMapImageService
 
         bool didTiles = false;
 
+        // A temporary 512x512 bitmap, initially cleared to sea water color.
         using var tempBitmap = new SKBitmap(IMAGE_WIDTH * 2, IMAGE_WIDTH * 2, SKColorType.Bgra8888, SKAlphaType.Opaque);
         using var tempCanvas = new SKCanvas(tempBitmap);
         tempCanvas.Clear(m_Watercolor);
 
+        // Draw the four map tiles (from the next zoom level up) onto this temporary bitmap (if they exist).
         using (var bottomLeft = GetExistingTileImage(previousLevel, x, y, path))
             if (bottomLeft is not null)
             {
@@ -308,6 +325,7 @@ public class MapImageService : IMapImageService
 
         if (didTiles)
         {
+            // There were tiles one zoom level up. Now resize our temp 512x512 down to 256x256 with bilinear interpolation.
             using var newTileBitmap = tempBitmap.Resize(new SKImageInfo(IMAGE_WIDTH, IMAGE_WIDTH, SKColorType.Bgra8888, SKAlphaType.Opaque), new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.None));
             using var newTileEncoded = newTileBitmap.Encode(SKEncodedImageFormat.Jpeg, JPEG_QUALITY);
 
@@ -317,7 +335,6 @@ public class MapImageService : IMapImageService
                 {
                     using var fs = File.Create(outputFile);
                     newTileEncoded.SaveTo(fs);
-                    m_log.Debug($"{LogHeader}: saved file {outputFile}");
                 }
             }
             catch (Exception e)
@@ -328,6 +345,7 @@ public class MapImageService : IMapImageService
         }
         else
         {
+            // This can happen as a result of RemoveMapTile.
             try
             {
                 lock (m_Sync)
@@ -342,11 +360,17 @@ public class MapImageService : IMapImageService
         return true;
     }
 
+    /// <summary>
+    /// Get the image for a zoom level and grid map position.
+    /// </summary>
+    /// <param name="zoomlevel"></param>
+    /// <param name="x"></param>
+    /// <param name="y"></param>
+    /// <param name="path"></param>
+    /// <returns>a Skia bitmap, or null if the file does not exist</returns>
     private SKBitmap GetExistingTileImage(int zoomlevel, int x, int y, string path)
     {
         string fileName = GetTileFileName(zoomlevel, x, y, path);
-
-        m_log.Debug($"{LogHeader}: Asked for {fileName}");
 
         if (File.Exists(fileName))
         {
@@ -354,6 +378,7 @@ public class MapImageService : IMapImageService
             {
                 lock (m_Sync)
                 {
+                    // The tiles we saved should be 256x256 JPEG files. Reject if they are not.
                     if (IsMaptileJpeg(fileName))
                     {
                         using var fs = File.OpenRead(fileName);
@@ -361,12 +386,6 @@ public class MapImageService : IMapImageService
                         if (output is null)
                         {
                             m_log.Error($"{LogHeader}: Failed to decode map tile {fileName}");
-                            return null;
-                        }
-                        if (output.Width != IMAGE_WIDTH || output.Height != IMAGE_WIDTH)
-                        {
-                            m_log.Error($"{LogHeader}: Image has the wrong dimensions: {output.Width}x{output.Height}");
-                            output.Dispose();
                             return null;
                         }
 
@@ -380,7 +399,7 @@ public class MapImageService : IMapImageService
             }
         }
 
-        m_log.Debug($"{LogHeader}: not found.");
+        // The file did not exist, or we couldn't access it, or it wasn't a well-formed 256x256 JPEG.
         return null;
     }
 
@@ -388,8 +407,7 @@ public class MapImageService : IMapImageService
 
     #region Zoom tile fire and forget thread
 
-    // TODO IAIN -- This thread can be fixed up to consume less resources, and be more deterministic. Arbitrary delays and hope
-    // are not The Way. More intelligent batching, triggering, and separation of batches are The Way.
+    // TODO -- This code can be fixed up to be more deterministic, without arbitrary delays within the worker thread.
 
     // ... existing code ...
 
