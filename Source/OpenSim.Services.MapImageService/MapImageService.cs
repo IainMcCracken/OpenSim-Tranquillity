@@ -60,20 +60,19 @@ public class MapImageService : IMapImageService
         {
             if (!m_Initialized)
             {
-                m_Initialized = true;
-                m_log.Debug("[MAP IMAGE SERVICE]: Starting MapImage service...");
+                using var tempWaterBitmap = new SKBitmap(IMAGE_WIDTH, IMAGE_WIDTH, SKColorType.Bgra8888, SKAlphaType.Opaque);
+                tempWaterBitmap.Erase(m_Watercolor);
+
+                using var tempWaterData = tempWaterBitmap.Encode(SKEncodedImageFormat.Jpeg, JPEG_QUALITY);
+                m_WaterJPEGBytes = tempWaterData.ToArray();
 
                 IConfig serviceConfig = config.Configs["MapImageService"];
                 if (serviceConfig is not null)
                 {
                     m_TilesStoragePath = serviceConfig.GetString("TilesStoragePath", m_TilesStoragePath);
-
-                    using var tempWaterBitmap = new SKBitmap(IMAGE_WIDTH, IMAGE_WIDTH, SKColorType.Bgra8888, SKAlphaType.Opaque);
-                    tempWaterBitmap.Erase(m_Watercolor);
-
-                    using var tempWaterData = tempWaterBitmap.Encode(SKEncodedImageFormat.Jpeg, JPEG_QUALITY);
-                    m_WaterJPEGBytes = tempWaterData.ToArray();
                 }
+
+                m_Initialized = true;
             }
         }
     }
@@ -252,7 +251,7 @@ public class MapImageService : IMapImageService
     /// </summary>
     /// <param name="fileName">the file</param>
     /// <returns>true if the tile is a 256x256 JPEG</returns>
-    private bool IsMaptileJpeg(string fileName)
+    private static bool IsMaptileJpeg(string fileName)
     {
         if (File.Exists(fileName))
         {

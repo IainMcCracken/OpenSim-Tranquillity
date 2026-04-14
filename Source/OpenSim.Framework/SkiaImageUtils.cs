@@ -16,9 +16,21 @@ namespace OpenSim.Framework;
 public static class SkiaImageUtils
 {
     /// <summary>
-    /// Your basic lossless JPEG2000 encoder configuration
+    /// A basic lossless JPEG2000 encoder configuration
     /// </summary>
     private static readonly J2KEncoderConfiguration encoderConfiguration = new J2KEncoderConfiguration().WithLossless().WithFileFormat(true);
+
+    /// <summary>
+    /// Create a fresh empty opaque SKBitmap with the appropriate pixel format
+    /// </summary>
+    /// <param name="xsize"></param>
+    /// <param name="ysize"></param>
+    /// <returns></returns>
+    public static SKBitmap NewDefaultSKBitmap(int xsize, int ysize)
+    {
+        return new SKBitmap(xsize, ysize, SKColorType.Bgra8888, SKAlphaType.Opaque);
+    }
+
 
     /// <summary>
     /// Try to encode a bitmap to JPEG2000, lossless.
