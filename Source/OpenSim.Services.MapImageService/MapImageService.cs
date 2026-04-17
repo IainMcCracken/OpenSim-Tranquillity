@@ -312,7 +312,7 @@ public class MapImageService : IMapImageService
             lock (m_queueLock)
             {
                 HashSet<TileInfo> tiles;
-                if (pendingWork.TryGetValue(scopeID, out tiles))
+                if (!pendingWork.TryGetValue(scopeID, out tiles))
                 {
                     tiles = [];
                     pendingWork[scopeID] = tiles;
@@ -347,7 +347,6 @@ public class MapImageService : IMapImageService
 
         private static void ZoomsWorker(Object o)
         {
-            bool shouldContinue = false;
             do
             {
                 lock (m_queueLock)
@@ -357,18 +356,17 @@ public class MapImageService : IMapImageService
                     hasWork = false;
                     isWorking = true;
                 }
-                shouldContinue = DoScopes();
-            } while (shouldContinue);
+                DoScopes();
+            } while (pendingWork.Count != 0);
+            isWorking = false;
         }
 
-        private static bool DoScopes()
+        private static void DoScopes()
         {
             foreach (var key in currentWork.Keys)
             {
                 DoZooms(currentWork[key], key);
             }
-
-            return false;
         }
 
         private static void DoZooms(HashSet<TileInfo> levelOneWorkSet, UUID scopeID)
@@ -384,7 +382,11 @@ public class MapImageService : IMapImageService
 
                 while (childSet.Count != 0)
                 {
-                    TileInfo childTile = childSet.GetEnumerator().Current;
+                    HashSet<TileInfo>.Enumerator enumerator = childSet.GetEnumerator();
+                    if (!enumerator.MoveNext())
+                        continue;
+                    TileInfo childTile = enumerator.Current;
+
                     uint parentSize = 1u << (childLevel - 1);
                     uint mask = ~((parentSize << 1) - 1u);
                     int px = (int)(((uint)childTile.x) & mask);
