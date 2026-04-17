@@ -45,7 +45,7 @@ public static class SkiaImageUtils
         // Bypass the exception throwing null check in SkiaSharp
         if (inputImage is null) return false;
 
-        using var normalized = NormalizeColorType(inputImage);
+        using SKBitmap normalized = NormalizeColorType(inputImage);
         encoded = normalized.EncodeToJ2K(encoderConfiguration);
 
         return encoded is not null && encoded.Length != 0;
@@ -64,8 +64,8 @@ public static class SkiaImageUtils
         // Bypass the exception throwing null check in SkiaSharp
         if (inputImage is null) return false;
 
-        using var normalized = NormalizeColorType(inputImage);
-        using var data = normalized.Encode(SKEncodedImageFormat.Png, 100);
+        using SKBitmap normalized = NormalizeColorType(inputImage);
+        using SKData data = normalized.Encode(SKEncodedImageFormat.Png, 100);
         encoded = data?.ToArray();
 
         return encoded is not null && encoded.Length != 0;
@@ -85,8 +85,8 @@ public static class SkiaImageUtils
         // Bypass the exception throwing null check in SkiaSharp
         if (inputImage is null) return false;
 
-        using var normalized = NormalizeColorType(inputImage);
-        using var data = normalized.Encode(SKEncodedImageFormat.Jpeg, quality);
+        using SKBitmap normalized = NormalizeColorType(inputImage);
+        using SKData data = normalized.Encode(SKEncodedImageFormat.Jpeg, quality);
         encoded = data?.ToArray();
 
         return encoded is not null && encoded.Length != 0;
@@ -104,7 +104,7 @@ public static class SkiaImageUtils
 
         if (inData is null || inData.Length == 0) return false;
 
-        using var inputImage = SKBitmapJ2kExtensions.FromJ2KBytes(inData);
+        using SKBitmap inputImage = SKBitmapJ2kExtensions.FromJ2KBytes(inData);
         if (inputImage is null) return false;
 
         decoded = NormalizeColorType(inputImage);
@@ -124,7 +124,7 @@ public static class SkiaImageUtils
 
         if (inData is null || inData.Length == 0) return false;
 
-        using var inputImage = SKBitmap.Decode(inData);
+        using SKBitmap inputImage = SKBitmap.Decode(inData);
         if (inputImage is null) return false;
 
         decoded = NormalizeColorType(inputImage);
@@ -132,17 +132,12 @@ public static class SkiaImageUtils
         return true;
     }
 
-    /// <summary>
-    /// Normalize a bitmap to the bgra8888 pixel format.
-    /// </summary>
+    /// <summary>Normalize a bitmap to the bgra8888 pixel format.</summary>
     /// <remarks>
-    /// <para>
-    /// SkiaSharp doesn't always play nice with encoding and decoding. The 32-bit bgra pixel format does play nice with encoding
-    /// both JPEG and JPEG2000. It is also the pixel format provided by the Warp3D library.
-    /// </para>
-    /// <para>
-    /// Note: The input bitmap is not disposed of!
-    /// </para>
+    /// <para>SkiaSharp doesn't always play nice with encoding and decoding. The 32-bit bgra pixel format does play nice with
+    /// encoding both JPEG and JPEG2000. It is also the pixel format provided by the Warp3D library.</para>
+    /// 
+    /// <para><b>Note: Always returns a new SKBitmap! You now own both!</b></para>
     /// </remarks>
     /// <param name="input">An input bbitmap</param>
     /// <returns>A normalized bitmap</returns>

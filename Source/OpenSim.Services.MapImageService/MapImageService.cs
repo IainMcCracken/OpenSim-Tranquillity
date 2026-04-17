@@ -36,27 +36,34 @@ using OpenSim.Framework;
 using OpenSim.Services.Interfaces;
 using System.Reflection;
 using SkiaSharp;
+using System.Timers;
 
 namespace OpenSim.Services.MapImageService;
 
 public class MapImageService : IMapImageService
 {
     private static readonly ILog m_log = LogManager.GetLogger(MethodBase.GetCurrentMethod().DeclaringType);
-    private readonly string LogHeader = "[MAP IMAGE SERVICE]";
+    private static readonly string LogHeader = "[MAP IMAGE SERVICE]";
     private const int ZOOM_LEVELS = 8;
     private const int IMAGE_WIDTH = 256;
     private const int JPEG_QUALITY = 80;
 
     private static string m_TilesStoragePath = "maptiles";
 
-    private static readonly object m_Sync = new();
+    private static readonly object m_FileAccessLock = new();
     private static bool m_Initialized = false;
     private static readonly SKColor m_Watercolor = new(29, 72, 96);
     private static byte[] m_WaterJPEGBytes = null;
 
+    // Return this to callers, so they can't modify m_WaterJPEGBytes.
+    public static byte[] WaterJPEG
+    {
+        get => [.. m_WaterJPEGBytes];
+    }
+
     public MapImageService(IConfigSource config)
     {
-        lock (m_Sync)
+        lock (m_FileAccessLock)
         {
             if (!m_Initialized)
             {
@@ -119,7 +126,7 @@ public class MapImageService : IMapImageService
         string fileName = GetTileFileName(1, x, y, scopeID);
         try
         {
-            lock (m_Sync)
+            lock (m_FileAccessLock)
             {
                 CreateScopeFolder(scopeID);
                 File.WriteAllBytes(fileName, jpegBytes);
@@ -133,7 +140,8 @@ public class MapImageService : IMapImageService
         }
 
         // If the write succeeded, we can queue this tile up for producing the relevant zoomed map tiles.
-        return UpdateMultiResolutionFiles(x, y, scopeID);
+        WorkQueue.Enqueue(x, y, scopeID);
+        return true;
     }
 
     public bool RemoveMapTile(int x, int y, UUID scopeID, out string reason)
@@ -143,7 +151,7 @@ public class MapImageService : IMapImageService
 
         try
         {
-            lock (m_Sync)
+            lock (m_FileAccessLock)
             {
                 File.Delete(fileName);
             }
@@ -156,7 +164,8 @@ public class MapImageService : IMapImageService
         }
 
         // Queue up the deletion for regenerating zoomed map tiles.
-        return UpdateMultiResolutionFiles(x, y, scopeID);
+        WorkQueue.Enqueue(x, y, scopeID);
+        return true;
     }
 
     public byte[] GetMapTile(string fileName, UUID scopeID, out string format)
@@ -168,7 +177,7 @@ public class MapImageService : IMapImageService
             format = Path.GetExtension(fullName).ToLower();
             try
             {
-                lock (m_Sync)
+                lock (m_FileAccessLock)
                 {
                     if (IsMaptileJpeg(fullName))
                     {
@@ -190,8 +199,7 @@ public class MapImageService : IMapImageService
 
         // The file either didn't exist, or was not what we expected, so return an empty ocean tile instead.
         format = ".jpg";
-        // Make a copy, so callers cannot mutate our private field.
-        return [.. m_WaterJPEGBytes];
+        return WaterJPEG;
     }
 
     #endregion
@@ -274,205 +282,226 @@ public class MapImageService : IMapImageService
 
     #endregion
 
-    #region Zoom Tile Generation
 
-    private bool CreateZoomTile(int zoomLevel, int inx, int iny, string path)
+
+    #region Zoom tile creation
+
+
+    private sealed class WorkQueue
     {
-        int previousLevel = zoomLevel - 1;
-        int prevStep = 1 << previousLevel - 1;
-
-        int mask = unchecked((int)0xffffffff) << previousLevel;
-
-        // Convert x and y to the bottom left of current tile
-        int x = inx & mask;
-        int y = iny & mask;
-
-        bool didTiles = false;
-
-        // A temporary 512x512 bitmap, initially cleared to sea water color.
-        using var tempBitmap = new SKBitmap(IMAGE_WIDTH * 2, IMAGE_WIDTH * 2, SKColorType.Bgra8888, SKAlphaType.Opaque);
-        using var tempCanvas = new SKCanvas(tempBitmap);
-        tempCanvas.Clear(m_Watercolor);
-
-        // Draw the four map tiles (from the next zoom level up) onto this temporary bitmap (if they exist).
-        using (var bottomLeft = GetExistingTileImage(previousLevel, x, y, path))
-            if (bottomLeft is not null)
-            {
-                tempCanvas.DrawBitmap(bottomLeft, 0, IMAGE_WIDTH);
-                didTiles = true;
-            }
-        using (var bottomRight = GetExistingTileImage(previousLevel, x + prevStep, y, path))
-            if (bottomRight is not null)
-            {
-                tempCanvas.DrawBitmap(bottomRight, IMAGE_WIDTH, IMAGE_WIDTH);
-                didTiles = true;
-            }
-        using (var topLeft = GetExistingTileImage(previousLevel, x, y + prevStep, path))
-            if (topLeft is not null)
-            {
-                tempCanvas.DrawBitmap(topLeft, 0, 0);
-                didTiles = true;
-            }
-        using (var topRight = GetExistingTileImage(previousLevel, x + prevStep, y + prevStep, path))
-            if (topRight is not null)
-            {
-                tempCanvas.DrawBitmap(topRight, IMAGE_WIDTH, 0);
-                didTiles = true;
-            }
-
-        string outputFile = GetTileFileName(zoomLevel, x, y, path);
-
-        if (didTiles)
+        private static bool hasWork = false;
+        private static bool triggered = false;
+        private static bool isWorking = false;
+        private static Dictionary<UUID, HashSet<TileInfo>> pendingWork = [];
+        private static Dictionary<UUID, HashSet<TileInfo>> currentWork = [];
+        private static System.Timers.Timer timer = null;
+        private static readonly Object m_queueLock = new();
+        private readonly record struct TileInfo
         {
-            // There were tiles one zoom level up. Now resize our temp 512x512 down to 256x256 with bilinear interpolation.
-            using var newTileBitmap = tempBitmap.Resize(new SKImageInfo(IMAGE_WIDTH, IMAGE_WIDTH, SKColorType.Bgra8888, SKAlphaType.Opaque), new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.None));
-            using var newTileEncoded = newTileBitmap.Encode(SKEncodedImageFormat.Jpeg, JPEG_QUALITY);
-
-            try
+            public readonly int x;
+            public readonly int y;
+            public TileInfo(int x, int y)
             {
-                lock (m_Sync)
+                this.x = x;
+                this.y = y;
+            }
+        }
+
+        public static void Enqueue(int x, int y, UUID scopeID)
+        {
+            lock (m_queueLock)
+            {
+                HashSet<TileInfo> tiles;
+                if (pendingWork.TryGetValue(scopeID, out tiles))
                 {
-                    using var fs = File.Create(outputFile);
-                    newTileEncoded.SaveTo(fs);
+                    tiles = [];
+                    pendingWork[scopeID] = tiles;
                 }
-            }
-            catch (Exception e)
-            {
-                m_log.Warn($"{LogHeader}: Unable to save new zoom map tile {outputFile}. Reason: {e.Message}");
-                return false;
-            }
-        }
-        else
-        {
-            // This can happen as a result of RemoveMapTile.
-            try
-            {
-                lock (m_Sync)
-                    File.Delete(outputFile);
-            }
-            catch (Exception e)
-            {
-                m_log.Warn($"{LogHeader}: Failed to delete unneeded zoom map tile {outputFile}. Reason: {e.Message}");
-            }
-        }
 
-        return true;
-    }
+                tiles.Add(new TileInfo(x, y));
+                hasWork = true;
 
-    /// <summary>
-    /// Get the image for a zoom level and grid map position.
-    /// </summary>
-    /// <param name="zoomlevel"></param>
-    /// <param name="x"></param>
-    /// <param name="y"></param>
-    /// <param name="path"></param>
-    /// <returns>a Skia bitmap, or null if the file does not exist</returns>
-    private SKBitmap GetExistingTileImage(int zoomlevel, int x, int y, string path)
-    {
-        string fileName = GetTileFileName(zoomlevel, x, y, path);
-
-        if (File.Exists(fileName))
-        {
-            try
-            {
-                lock (m_Sync)
+                if (timer is null)
                 {
-                    // The tiles we saved should be 256x256 JPEG files. Reject if they are not.
-                    if (IsMaptileJpeg(fileName))
-                    {
-                        using var fs = File.OpenRead(fileName);
-                        SKBitmap output = SKBitmap.Decode(fs);
-                        if (output is null)
-                        {
-                            m_log.Error($"{LogHeader}: Failed to decode map tile {fileName}");
-                            return null;
-                        }
+                    timer = new(5000) { AutoReset = false };
+                    timer.Elapsed += TriggerFired;
+                }
+                timer.Start();
+            }
+        }
 
-                        return output;
+        private static void TriggerFired(Object o, ElapsedEventArgs e)
+        {
+            bool shouldFire = false;
+            lock (m_queueLock)
+            {
+                triggered = hasWork;
+                shouldFire = hasWork && (!isWorking);
+            }
+
+            if (shouldFire)
+            {
+                Util.FireAndForget(ZoomsWorker);
+            }
+        }
+
+        private static void ZoomsWorker(Object o)
+        {
+            bool shouldContinue = false;
+            do
+            {
+                lock (m_queueLock)
+                {
+                    (currentWork, pendingWork) = (pendingWork, currentWork);
+                    pendingWork.Clear();
+                    hasWork = false;
+                    isWorking = true;
+                }
+                shouldContinue = DoScopes();
+            } while (shouldContinue);
+        }
+
+        private static bool DoScopes()
+        {
+            foreach (var key in currentWork.Keys)
+            {
+                DoZooms(currentWork[key], key);
+            }
+
+            return false;
+        }
+
+        private static void DoZooms(HashSet<TileInfo> levelOneWorkSet, UUID scopeID)
+        {
+            string scopePath = GetScopeFolder(scopeID);
+
+            HashSet<TileInfo> childSet = levelOneWorkSet;
+            HashSet<TileInfo> parentSet;
+
+            for (int childLevel = 1; childLevel < ZOOM_LEVELS; childLevel++)
+            {
+                parentSet = [];
+
+                while (childSet.Count != 0)
+                {
+                    TileInfo childTile = childSet.GetEnumerator().Current;
+                    uint parentSize = 1u << (childLevel - 1);
+                    uint mask = ~((parentSize << 1) - 1u);
+                    int px = (int)(((uint)childTile.x) & mask);
+                    int py = (int)(((uint)childTile.y) & mask);
+                    int stride = (int)parentSize;
+
+                    using SKBitmap bottomLeft = GetExistingTileImage(childLevel, px, py, scopePath);
+                    using SKBitmap bottomRight = GetExistingTileImage(childLevel, px + stride, py, scopePath);
+                    using SKBitmap topLeft = GetExistingTileImage(childLevel, px, py + stride, scopePath);
+                    using SKBitmap topRight = GetExistingTileImage(childLevel, px + stride, py + stride, scopePath);
+
+                    childSet.Remove(new TileInfo(px, py));
+                    childSet.Remove(new TileInfo(px + stride, py));
+                    childSet.Remove(new TileInfo(px, py + stride));
+                    childSet.Remove(new TileInfo(px + stride, py + stride));
+
+                    parentSet.Add(new TileInfo(px, py));
+
+                    string parentFile = GetTileFileName(childLevel + 1, px, py, scopePath);
+
+                    bool regenerate = bottomLeft is not null || bottomRight is not null || topLeft is not null || topRight is not null;
+
+                    if (regenerate)
+                    {
+                        using SKBitmap tempBitmap = SkiaImageUtils.NewDefaultSKBitmap(512, 512);
+                        using SKCanvas tempCanvas = new(tempBitmap);
+                        tempCanvas.Clear(m_Watercolor);
+
+                        if (bottomLeft is not null) tempCanvas.DrawBitmap(bottomLeft, 0, IMAGE_WIDTH);
+                        if (bottomRight is not null) tempCanvas.DrawBitmap(bottomRight, IMAGE_WIDTH, IMAGE_WIDTH);
+                        if (topLeft is not null) tempCanvas.DrawBitmap(topLeft, 0, 0);
+                        if (topRight is not null) tempCanvas.DrawBitmap(topRight, IMAGE_WIDTH, 0);
+
+                        using SKBitmap newTile = tempBitmap.Resize(new SKImageInfo(IMAGE_WIDTH, IMAGE_WIDTH, SKColorType.Bgra8888, SKAlphaType.Opaque), new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.None));
+                        using SKData newTileData = newTile.Encode(SKEncodedImageFormat.Jpeg, JPEG_QUALITY);
+
+                        try
+                        {
+                            lock (m_FileAccessLock)
+                            {
+                                using FileStream fs = File.Create(parentFile);
+                                newTileData.SaveTo(fs);
+                            }
+                        }
+                        catch (Exception e)
+                        {
+                            m_log.Warn($"{LogHeader}: Unable to save new zoom map tile {parentFile}. Reason: {e.Message}");
+                        }
+                    }
+                    else
+                    {
+                        if (File.Exists(parentFile))
+                        {
+                            try
+                            {
+                                lock (m_FileAccessLock)
+                                {
+                                    File.Delete(parentFile);
+                                }
+                            }
+                            catch (Exception e)
+                            {
+                                m_log.Warn($"{LogHeader}: Unable to delete all-water tile {parentFile}. Reason: {e.Message}");
+                            }
+                        }
                     }
                 }
-            }
-            catch (Exception e)
-            {
-                m_log.Error($"{LogHeader}: Unable to read map tile from {fileName}", e);
+
+                childSet = parentSet;
             }
         }
 
-        // The file did not exist, or we couldn't access it, or it wasn't a well-formed 256x256 JPEG.
-        return null;
-    }
-
-    #endregion
-
-    #region Zoom tile fire and forget thread
-
-    // TODO -- This code can be fixed up to be more deterministic, without arbitrary delays within the worker thread.
-
-    // ... existing code ...
-
-    // When large varregions start up, they can send piles of new map tiles. This causes
-    //    this multi-resolution routine to be called a zillion times an causes much CPU
-    //    time to be spent creating multi-resolution tiles that will be replaced when
-    //    the next maptile arrives.
-    private struct MapToMultiRez
-    {
-        public int x;
-        public int y;
-        public UUID scopeID;
-    }
-
-    private readonly Queue<MapToMultiRez> m_MultiRezToBuild = new Queue<MapToMultiRez>();
-
-    private bool UpdateMultiResolutionFiles(int x, int y, UUID scopeID)
-    {
-        lock (m_MultiRezToBuild)
+        private static SKBitmap GetExistingTileImage(int level, int x, int y, string path)
         {
-            // m_log.DebugFormat("{0} UpdateMultiResolutionFilesAsync: scheduling update for <{1},{2}>", LogHeader, x, y);
-            m_MultiRezToBuild.Enqueue(
-                new MapToMultiRez
+            string fileName = GetTileFileName(level, x, y, path);
+
+            if (File.Exists(fileName))
+            {
+                try
                 {
-                    x = x,
-                    y = y,
-                    scopeID = scopeID
+                    lock (m_FileAccessLock)
+                    {
+                        // The tiles we saved should be 256x256 JPEG files. Reject if they are not.
+                        if (IsMaptileJpeg(fileName))
+                        {
+                            using var fs = File.OpenRead(fileName);
+                            SKBitmap output = SKBitmap.Decode(fs);
+                            if (output is null)
+                            {
+                                m_log.Error($"{LogHeader}: Failed to decode map tile {fileName}");
+                                return null;
+                            }
+
+                            return output;
+                        }
+                    }
                 }
-            );
-
-            if (m_MultiRezToBuild.Count == 1)
-                Util.FireAndForget(DoUpdateMultiResolutionFilesAsync);
-        }
-
-        return true;
-    }
-
-    private void DoUpdateMultiResolutionFilesAsync(object o)
-    {
-        m_log.Debug($"{LogHeader}: Thread triggered.");
-        // let acumulate large region tiles
-        Thread.Sleep(1000); // large regions take time to upload tiles
-        // Thread.Sleep(60 * 1000); // large regions take time to upload tiles
-
-        while (true)
-        {
-            MapToMultiRez toMultiRez;
-            lock (m_MultiRezToBuild)
-            {
-                if (!m_MultiRezToBuild.TryDequeue(out toMultiRez))
-                    return;
-            }
-
-            string path = CreateScopeFolder(toMultiRez.scopeID);
-            for (int zoomLevel = 2; zoomLevel <= ZOOM_LEVELS; zoomLevel++)
-            {
-                m_log.Debug($"{LogHeader}: Create zoom tile level {zoomLevel} for {toMultiRez.x}-{toMultiRez.y}");
-                if (!CreateZoomTile(zoomLevel, toMultiRez.x, toMultiRez.y, path))
+                catch (Exception e)
                 {
-                    m_log.WarnFormat("[MAP IMAGE SERVICE]: Unable to create tile for {0},{1} at zoom level {1}", toMultiRez.x, toMultiRez.y, zoomLevel);
-                    return;
+                    m_log.Error($"{LogHeader}: Unable to read map tile from {fileName}", e);
                 }
             }
-            Thread.Sleep(50); // slow things a bit
-        }
-    }
 
-    #endregion
+            // The file did not exist, or we couldn't access it, or it wasn't a well-formed 256x256 JPEG.
+            return null;
+        }
+
+    }
 }
+
+
+
+#endregion
+
+
+
+
+
+
+
