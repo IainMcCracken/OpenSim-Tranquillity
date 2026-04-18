@@ -41,3 +41,7 @@ Robust params:
 inifile
 logfile
 
+# WHERE
+
+TerrainSplat and friends.
+

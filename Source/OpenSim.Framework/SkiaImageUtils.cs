@@ -132,6 +132,12 @@ public static class SkiaImageUtils
         return true;
     }
 
+    public static SKBitmap OpaqueResize(SKBitmap input, int x, int y)
+    {
+        if (input is null) return null;
+        return input.Resize(new SKImageInfo(x,y,SKColorType.Bgra8888,SKAlphaType.Opaque),new SKSamplingOptions(SKFilterMode.Linear,SKMipmapMode.None));
+    }
+
     /// <summary>Normalize a bitmap to the bgra8888 pixel format.</summary>
     /// <remarks>
     /// <para>SkiaSharp doesn't always play nice with encoding and decoding. The 32-bit bgra pixel format does play nice with

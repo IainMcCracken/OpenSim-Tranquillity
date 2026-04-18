@@ -468,10 +468,7 @@ public class MapImageService : IMapImageService
                         if (topLeft is not null) tempCanvas.DrawBitmap(topLeft, 0, 0);
                         if (topRight is not null) tempCanvas.DrawBitmap(topRight, IMAGE_WIDTH, 0);
 
-                        using SKBitmap newTile
-                            = tempBitmap.Resize(
-                                new SKImageInfo(IMAGE_WIDTH, IMAGE_WIDTH, SKColorType.Bgra8888, SKAlphaType.Opaque),
-                                new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.None));
+                        using SKBitmap newTile = SkiaImageUtils.OpaqueResize(tempBitmap, IMAGE_WIDTH, IMAGE_WIDTH);
                         using SKData newTileData = newTile.Encode(SKEncodedImageFormat.Jpeg, JPEG_QUALITY);
 
                         try
