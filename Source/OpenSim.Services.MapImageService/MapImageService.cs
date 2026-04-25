@@ -89,7 +89,11 @@ public class MapImageService : IMapImageService
 
     #region Module API
 
-    public bool AddMapTile(int x, int y, byte[] imageData, UUID scopeID, out string reason)
+    /// <remarks>
+    /// This implementation <b>checks</b> the incoming byte array. If it is not a valid image (don't care what kind), and isn't
+    /// 256x256, it is rejected. Then it is recoded to JPEG at 80% quality, and that recode is what is written out as a file.
+    /// </remarks>
+    public bool AddMapTile(int x, int y, byte[] imageData, UUID tenantScopeUUID, out string reason)
     {
         reason = string.Empty;
 
@@ -125,12 +129,12 @@ public class MapImageService : IMapImageService
         }
 
         // We have a valid byte[] with a normalized JPEG in it. Now we can write it to disk.
-        string fileName = GetTileFileName(1, x, y, scopeID);
+        string fileName = GetTileFileName(1, x, y, tenantScopeUUID);
         try
         {
             lock (m_FileAccessLock)
             {
-                CreateScopeFolder(scopeID);
+                CreateScopeFolder(tenantScopeUUID);
                 File.WriteAllBytes(fileName, jpegBytes);
             }
         }
@@ -142,7 +146,7 @@ public class MapImageService : IMapImageService
         }
 
         // If the write succeeded, we can queue this tile up for producing the relevant zoomed map tiles.
-        ZoomTileWorkQueue.Enqueue(x, y, scopeID);
+        ZoomTileWorkQueue.Enqueue(x, y, tenantScopeUUID);
         return true;
     }
 
@@ -319,16 +323,16 @@ public class MapImageService : IMapImageService
         /// </remarks>
         /// <param name="x"></param>
         /// <param name="y"></param>
-        /// <param name="scopeID"></param>
-        public static void Enqueue(int x, int y, UUID scopeID)
+        /// <param name="tenantScopeID"></param>
+        public static void Enqueue(int x, int y, UUID tenantScopeID)
         {
             lock (m_queueLock)
             {
                 HashSet<TileInfo> tiles;
-                if (!pendingWork.TryGetValue(scopeID, out tiles))
+                if (!pendingWork.TryGetValue(tenantScopeID, out tiles))
                 {
                     tiles = [];
-                    pendingWork[scopeID] = tiles;
+                    pendingWork[tenantScopeID] = tiles;
                 }
 
                 tiles.Add(new TileInfo(x, y));
@@ -513,7 +517,7 @@ public class MapImageService : IMapImageService
         /// <param name="x"></param>
         /// <param name="y"></param>
         /// <param name="path"></param>
-        /// <returns>A Skia bitmap</returns>
+        /// <returns>An <b>immmutable</b> Skia bitmap, or null on failure</returns>
         private static SKBitmap GetExistingTileImage(int level, int x, int y, string path)
         {
             string fileName = GetTileFileName(level, x, y, path);
@@ -534,6 +538,8 @@ public class MapImageService : IMapImageService
                                 m_log.Error($"{LogHeader}: Failed to decode map tile {fileName}");
                                 return null;
                             }
+
+                            output.SetImmutable();
 
                             return output;
                         }
