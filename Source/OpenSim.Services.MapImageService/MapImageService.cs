@@ -93,19 +93,18 @@ public class MapImageService : IMapImageService
     {
         reason = string.Empty;
 
-        SKBitmap inputImage;
         byte[] jpegBytes;
 
         // Don't trust unknown bytes from the Internet. You don't know where they've been!
         // First, are they a valid image? We'll take anything SkiaSharp can decode, or a JPEG2000.
-        if (!SkiaImageUtils.TryDecodeFromBytes(imageData, out inputImage) && !SkiaImageUtils.TryDecodeFromJ2K(imageData, out inputImage))
+        if (!SkiaImageUtils.TryDecodeFromBytes(imageData, out SKBitmap inputImage)
+            && !SkiaImageUtils.TryDecodeFromJ2K(imageData, out inputImage))
         {
             reason = $"The submitted data is not an image file";
             m_log.Warn($"{LogHeader}: Add map tile at {x},{y} failed: {reason}");
             return false;
         }
 
-        // Note SKBitmaps hold unmanaged data, so must be disposed of properly.
         using (inputImage)
         {
             // Ok, the image is valid. Is it the right size? It has to be 256x256.
@@ -182,7 +181,7 @@ public class MapImageService : IMapImageService
             {
                 lock (m_FileAccessLock)
                 {
-                    if (IsMaptileJpeg(fullName))
+                    if (IsJpegMaptile(fullName))
                     {
                         using var fs = File.OpenRead(fullName);
                         using var ms = new MemoryStream();
@@ -266,7 +265,7 @@ public class MapImageService : IMapImageService
     /// </remarks>
     /// <param name="fileName">the file</param>
     /// <returns>true if the tile is likely a 256x256 JPEG</returns>
-    private static bool IsMaptileJpeg(string fileName)
+    private static bool IsJpegMaptile(string fileName)
     {
         if (File.Exists(fileName))
         {
@@ -459,7 +458,7 @@ public class MapImageService : IMapImageService
                     {
                         // We plop our potential four children onto a 512x512 of ocean, and resize it to 256x256, then save as
                         // JPEG to file.
-                        using SKBitmap tempBitmap = SkiaImageUtils.NewDefaultSKBitmap(512, 512);
+                        using SKBitmap tempBitmap = new(512, 512, SKColorType.Bgra8888, SKAlphaType.Opaque);
                         using SKCanvas tempCanvas = new(tempBitmap);
                         tempCanvas.Clear(m_Watercolor);
 
@@ -526,7 +525,7 @@ public class MapImageService : IMapImageService
                     lock (m_FileAccessLock)
                     {
                         // The tiles we saved should be 256x256 JPEG files. Reject if they are not.
-                        if (IsMaptileJpeg(fileName))
+                        if (IsJpegMaptile(fileName))
                         {
                             using var fs = File.OpenRead(fileName);
                             SKBitmap output = SKBitmap.Decode(fs);

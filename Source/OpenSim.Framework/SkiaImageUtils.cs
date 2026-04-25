@@ -13,40 +13,46 @@ using CoreJ2K.Configuration;
 
 namespace OpenSim.Framework;
 
+/// <summary>
+/// This little utility class provides a couple of common utilities, to reduce verbosity elsewhere.
+/// </summary>
 public static class SkiaImageUtils
 {
     /// <summary>
-    /// A basic lossless JPEG2000 encoder configuration
+    /// A basic lossless JPEG2000 encoder configuration.
     /// </summary>
+    /// <remarks>
+    /// The WithFileFormat(true) parameter enforces that a proper JP2 header is included in the output.
+    /// </remarks>
     private static readonly J2KEncoderConfiguration encoderConfiguration = new J2KEncoderConfiguration().WithLossless().WithFileFormat(true);
 
     /// <summary>
-    /// Create a fresh empty opaque SKBitmap with the appropriate pixel format
-    /// </summary>
-    /// <param name="xsize"></param>
-    /// <param name="ysize"></param>
-    /// <returns></returns>
-    public static SKBitmap NewDefaultSKBitmap(int xsize, int ysize)
-    {
-        return new SKBitmap(xsize, ysize, SKColorType.Bgra8888, SKAlphaType.Opaque);
-    }
-
-
-    /// <summary>
-    /// Try to encode a bitmap to JPEG2000, lossless.
+    /// Try to encode a bitmap to JPEG2000, lossless, with JP2 header.
     /// </summary>
     /// <param name="inputImage">a Skia bitmap</param>
     /// <param name="encoded">(output) JPEG2000 bytes</param>
     /// <returns>true if the encode succeeded</returns>
-    public static bool TryEncodeToJ2K(SKBitmap inputImage, out byte[] encoded)
+    public static bool TryEncodeToJ2KLossless(SKBitmap inputImage, out byte[] encoded)
     {
         encoded = null;
 
-        // Bypass the exception throwing null check in SkiaSharp
         if (inputImage is null) return false;
 
-        using SKBitmap normalized = NormalizeColorType(inputImage);
-        encoded = normalized.EncodeToJ2K(encoderConfiguration);
+        bool needDispose = false;
+        SKBitmap workingImage = inputImage;
+        if ((inputImage.ColorType != SKColorType.Rgb888x) && (inputImage.ColorType != SKColorType.Bgra8888))
+        {
+            // We know that both Rbg888x and Bgra8888 color types will encode to JPEG2000 successfully. Be paranoid and convert
+            // other color types to Bgra8888. This way, images with alpha will come through properly, and images without alpha
+            // will have alpha 100% applied properly.
+            needDispose = true;
+            workingImage = inputImage.Copy(SKColorType.Bgra8888);
+        }
+
+        encoded = workingImage.EncodeToJ2K(encoderConfiguration);
+
+        if (needDispose)
+            workingImage.Dispose();
 
         return encoded is not null && encoded.Length != 0;
     }
@@ -64,9 +70,22 @@ public static class SkiaImageUtils
         // Bypass the exception throwing null check in SkiaSharp
         if (inputImage is null) return false;
 
-        using SKBitmap normalized = NormalizeColorType(inputImage);
-        using SKData data = normalized.Encode(SKEncodedImageFormat.Png, 100);
+        bool needDispose = false;
+        SKBitmap workingImage = inputImage;
+        if ((inputImage.ColorType != SKColorType.Rgb888x) && (inputImage.ColorType != SKColorType.Bgra8888))
+        {
+            // We know that both Rbg888x and Bgra8888 color types will encode to PNG successfully. Be paranoid and convert
+            // other color types to Bgra8888. This way, images with alpha will come through properly, and images without alpha
+            // will have alpha 100% applied properly.
+            needDispose = true;
+            workingImage = inputImage.Copy(SKColorType.Bgra8888);
+        }
+
+        using SKData data = workingImage.Encode(SKEncodedImageFormat.Png, 100);
         encoded = data?.ToArray();
+
+        if (needDispose)
+            workingImage.Dispose();
 
         return encoded is not null && encoded.Length != 0;
     }
@@ -82,21 +101,29 @@ public static class SkiaImageUtils
     {
         encoded = null;
 
-        // Bypass the exception throwing null check in SkiaSharp
         if (inputImage is null) return false;
 
-        using SKBitmap normalized = NormalizeColorType(inputImage);
-        using SKData data = normalized.Encode(SKEncodedImageFormat.Jpeg, quality);
+        bool needDispose = false;
+        SKBitmap workingImage = inputImage;
+        if (inputImage.ColorType != SKColorType.Bgra8888)
+        {
+            // Encoding to JPEG will silently fail with Rgb888x, so convert to Bgra8888 which is known to encode successfully.
+            workingImage = inputImage.Copy(SKColorType.Bgra8888);
+        }
+        using SKData data = workingImage.Encode(SKEncodedImageFormat.Jpeg, quality);
         encoded = data?.ToArray();
+
+        if (needDispose)
+            workingImage.Dispose();
 
         return encoded is not null && encoded.Length != 0;
     }
 
     /// <summary>
-    /// Try to decode a JPEG2000
+    /// Try to decode a JPEG2000. If successful, the result will likely be SKColorType.Rgb888x and SKAlphaType.Opaque.
     /// </summary>
     /// <param name="inData">bytes of a JPEG2000 image</param>
-    /// <param name="decoded">(output) a Skia bitmap with 32-bit bgra pixel format</param>
+    /// <param name="decoded">(output) a Skia bitmap, which will likely have the Rgb888x color typw</param>
     /// <returns>true if the decode succeeded</returns>
     public static bool TryDecodeFromJ2K(byte[] inData, out SKBitmap decoded)
     {
@@ -104,19 +131,24 @@ public static class SkiaImageUtils
 
         if (inData is null || inData.Length == 0) return false;
 
-        using SKBitmap inputImage = SKBitmapJ2kExtensions.FromJ2KBytes(inData);
-        if (inputImage is null) return false;
+        try
+        {
+            decoded = SKBitmapJ2kExtensions.FromJ2KBytes(inData);
+        }
+        catch (InvalidOperationException e)
+        {
+            // The given array of bytes is not a valid JPEG2000 image. Report failure.
+            return false;
+        }
 
-        decoded = NormalizeColorType(inputImage);
-
-        return true;
+        return decoded is not null;
     }
 
     /// <summary>
     /// Try to decode an image (other than a JPEG2000)
     /// </summary>
     /// <param name="inData">bytes of an image</param>
-    /// <param name="decoded">(output) a Skia bitmap with 32-bit bgra pixel format</param>
+    /// <param name="decoded">(output) a Skia bitmap</param>
     /// <returns>true if the decode succeeded</returns>
     public static bool TryDecodeFromBytes(byte[] inData, out SKBitmap decoded)
     {
@@ -124,34 +156,25 @@ public static class SkiaImageUtils
 
         if (inData is null || inData.Length == 0) return false;
 
-        using SKBitmap inputImage = SKBitmap.Decode(inData);
-        if (inputImage is null) return false;
+        decoded = SKBitmap.Decode(inData);
 
-        decoded = NormalizeColorType(inputImage);
-
-        return true;
+        return decoded is not null;
     }
 
+    /// <summary>
+    /// Do a simple opaque resize.
+    /// </summary>
+    /// <remarks>
+    /// The output color type is Bgra8888 and the alpha type is Opaque. The sampling is bilinear.
+    /// </remarks>
+    /// <param name="input"></param>
+    /// <param name="x"></param>
+    /// <param name="y"></param>
+    /// <returns>The new bitmap with the new size.</returns>
     public static SKBitmap OpaqueResize(SKBitmap input, int x, int y)
     {
         if (input is null) return null;
-        return input.Resize(new SKImageInfo(x,y,SKColorType.Bgra8888,SKAlphaType.Opaque),new SKSamplingOptions(SKFilterMode.Linear,SKMipmapMode.None));
-    }
-
-    /// <summary>Normalize a bitmap to the bgra8888 pixel format.</summary>
-    /// <remarks>
-    /// <para>SkiaSharp doesn't always play nice with encoding and decoding. The 32-bit bgra pixel format does play nice with
-    /// encoding both JPEG and JPEG2000. It is also the pixel format provided by the Warp3D library.</para>
-    /// 
-    /// <para><b>Note: Always returns a new SKBitmap! You now own both!</b></para>
-    /// </remarks>
-    /// <param name="input">An input bbitmap</param>
-    /// <returns>A normalized bitmap</returns>
-    public static SKBitmap NormalizeColorType(SKBitmap input)
-    {
-        // Bypass the null-check in SKBitmap.Copy which throws an exception.
-        if (input is null) return null;
-        return input.Copy(SKColorType.Bgra8888);
+        return input.Resize(new SKImageInfo(x, y, SKColorType.Bgra8888, SKAlphaType.Opaque), new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.None));
     }
 
     /// <summary>
