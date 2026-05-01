@@ -39,33 +39,33 @@ namespace OpenSim.Region.CoreModules.World.Warp3DMap
     {
         #region Constants
 
-        private static readonly UUID DIRT_DETAIL = new UUID("0bc58228-74a0-7e83-89bc-5c23464bcec5");
-        private static readonly UUID GRASS_DETAIL = new UUID("63338ede-0037-c4fd-855b-015d77112fc8");
-        private static readonly UUID MOUNTAIN_DETAIL = new UUID("303cd381-8560-7579-23f1-f0a880799740");
-        private static readonly UUID ROCK_DETAIL = new UUID("53a2f406-4895-1d13-d541-d2e3b86bc19c");
+        private static readonly UUID DIRT_DETAIL = new("0bc58228-74a0-7e83-89bc-5c23464bcec5");
+        private static readonly UUID GRASS_DETAIL = new("63338ede-0037-c4fd-855b-015d77112fc8");
+        private static readonly UUID MOUNTAIN_DETAIL = new("303cd381-8560-7579-23f1-f0a880799740");
+        private static readonly UUID ROCK_DETAIL = new("53a2f406-4895-1d13-d541-d2e3b86bc19c");
 
-        private static readonly UUID[] DEFAULT_TERRAIN_DETAIL = new UUID[]
-        {
+        private static readonly UUID[] DEFAULT_TERRAIN_DETAIL =
+        [
             DIRT_DETAIL,
             GRASS_DETAIL,
             MOUNTAIN_DETAIL,
             ROCK_DETAIL
-        };
+        ];
 
-        private static readonly SKColor[] DEFAULT_TERRAIN_COLOR = new SKColor[]
-        {
-            new SKColor(164, 136, 117, 255),
-            new SKColor(65, 87, 47, 255),
-            new SKColor(157, 145, 131, 255),
-            new SKColor(125, 128, 130, 255)
-        };
+        private static readonly SKColor[] DEFAULT_TERRAIN_COLOR =
+        [
+            new (164, 136, 117),
+            new (65, 87, 47),
+            new (157, 145, 131),
+            new (125, 128, 130)
+        ];
 
-        private static readonly UUID TERRAIN_CACHE_MAGIC = new UUID("2c0c7ef2-56be-4eb8-aacb-76712c535b4b");
+        private static readonly UUID TERRAIN_CACHE_MAGIC = new("2c0c7ef2-56be-4eb8-aacb-76712c535b4b");
 
         #endregion Constants
 
         private static readonly ILog m_log = log4net.LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType.Name);
-        private static string LogHeader = "[WARP3D TERRAIN SPLAT]";
+        private static readonly string LogHeader = "[WARP3D TERRAIN SPLAT]";
 
         /// <summary>
         /// Builds a composited terrain texture given the region texture
@@ -78,12 +78,12 @@ namespace OpenSim.Region.CoreModules.World.Warp3DMap
         /// Note we create a 256x256 dimension texture even if the actual terrain is larger.
         /// </remarks>
 
-    public static SKBitmap Splat(ITerrainChannel terrain, UUID[] textureIDs,
-                float[] startHeights, float[] heightRanges,
-                uint regionPositionX, uint regionPositionY,
-                IAssetService assetService, IJ2KDecoder decoder,
-                bool textureTerrain, bool averagetextureTerrain,
-                int twidth, int theight)
+        public static SKBitmap Splat(ITerrainChannel terrain, UUID[] textureIDs,
+                    float[] startHeights, float[] heightRanges,
+                    uint regionPositionX, uint regionPositionY,
+                    IAssetService assetService, IJ2KDecoder decoder,
+                    bool textureTerrain, bool averagetextureTerrain,
+                    int twidth, int theight)
         {
             SKBitmap[] detailTexture = new SKBitmap[4];
 
@@ -96,101 +96,85 @@ namespace OpenSim.Region.CoreModules.World.Warp3DMap
             if (textureTerrain)
             {
                 // Swap empty terrain textureIDs with default IDs
-                for(int i = 0; i < textureIDs.Length; i++)
+                for (int i = 0; i < textureIDs.Length; i++)
                 {
-                    if(textureIDs[i].IsZero())
+                    if (textureIDs[i].IsZero())
                         textureIDs[i] = DEFAULT_TERRAIN_DETAIL[i];
                 }
 
                 #region Texture Fetching
 
-                if(assetService != null)
+                if (assetService != null)
                 {
-                    for(int i = 0; i < 4; i++)
+                    for (int i = 0; i < 4; i++)
                     {
                         // asset cache indexes are strings
                         string cacheName = "MAP" + textureIDs[i].ToString();
+                        SKBitmap tempBitmap = null;
 
                         // Try to fetch a cached copy of the decoded/resized version of this texture
                         AssetBase asset = assetService.GetCached(cacheName);
 
-                        if(asset != null)
+                        if (asset != null)
                         {
-                            try
+                            if (SkiaImageUtils.TryDecodeFromBytes(asset.Data, out tempBitmap) && (tempBitmap.Width == 16) && (tempBitmap.Height == 16))
                             {
-                                using(MemoryStream stream = new MemoryStream(asset.Data))
-                                    detailTexture[i] = SKBitmap.Decode(stream);
+                                // PNG decode is always Bgra8888 but we want Rgb888x for code below.
+                                detailTexture[i] = tempBitmap.Copy(SKColorType.Rgb888x);
+                            }
+                            else
+                            {
+                                m_log.Warn($"{LogHeader}: Failed to decode cached terrain patch texture {textureIDs[i]}");
+                            }
 
-                                if(detailTexture[i] == null ||
-                                   detailTexture[i].ColorType != SKColorType.Rgb888x ||
-                                   detailTexture[i].Width != 16 || detailTexture[i].Height != 16)
-                                {
-                                    detailTexture[i]?.Dispose();
-                                    detailTexture[i] = null;
-                                }
-                            }
-                            catch(Exception ex)
-                            {
-                                m_log.Warn("Failed to decode cached terrain patch texture " + textureIDs[i] + "): " + ex.Message);
-                            }
+                            // Explicitly dispose here (using would be a pain, needing more effort than this)
+                            tempBitmap?.Dispose();
                         }
 
-                        if(detailTexture[i] == null)
+                        if (detailTexture[i] == null)
                         {
-                            // Try to fetch the original JPEG2000 texture, resize if needed, and cache as PNG
+                            // We didn't get a cached texture, so we go to the assets service for a normal "get."
                             asset = assetService.Get(textureIDs[i].ToString());
-                            if(asset != null)
+                            if (asset != null)
                             {
-                                try
+                                if (SkiaImageUtils.TryDecodeFromJ2K(asset.Data, out tempBitmap))
                                 {
-                                    var j2k = J2kImage.FromBytes(asset.Data);
-                                    if (j2k != null)
+                                    if ((tempBitmap.ColorType != SKColorType.Rgb888x) || (tempBitmap.Width != 16) || (tempBitmap.Height != 16))
                                     {
-                                        SKImage skImg = j2k.As<SKImage>();
-                                        if (skImg != null)
+                                        SkiaImageUtils.TryLinearOpaqueResize(tempBitmap, 16, 16, out detailTexture[i], SKColorType.Rgb888x);
+                                    }
+                                    else
+                                    {
+                                        detailTexture[i] = tempBitmap;
+                                        tempBitmap = null;
+                                    }
+
+                                    // Again, explicit dispose here makes things simpler.
+                                    tempBitmap?.Dispose();
+
+                                    byte[] tempCached;
+
+                                    if (SkiaImageUtils.TryEncodeToPng(detailTexture[i], out tempCached))
+                                    {
+                                        AssetBase newAsset = new AssetBase
                                         {
-                                            using (SKData png = skImg.Encode(SKEncodedImageFormat.Png, 100))
-                                            using (var ms = new MemoryStream(png.ToArray()))
-                                            {
-                                                detailTexture[i] = SKBitmap.Decode(ms);
-                                            }
-                                        }
+                                            Data = tempCached.ToArray(),
+                                            Description = "PNG",
+                                            Flags = AssetFlags.Collectable,
+                                            FullID = UUID.Zero,
+                                            ID = cacheName,
+                                            Local = true,
+                                            Name = String.Empty,
+                                            Temporary = true,
+                                            Type = (sbyte)AssetType.Unknown
+                                        };
+                                        newAsset.Metadata.ContentType = "image/png";
+                                        assetService.Store(newAsset);
                                     }
                                 }
-                                catch(Exception ex)
+                                else
                                 {
-                                    m_log.Warn("Failed to decode terrain texture " + asset.ID + ": " + ex.Message);
-                                }
-                            }
-
-                            if(detailTexture[i] != null)
-                            {
-                                if (detailTexture[i].ColorType != SKColorType.Rgb888x ||
-                                   detailTexture[i].Width != 16 || detailTexture[i].Height != 16)
-                                {
-                                    using(SKBitmap origBitmap = detailTexture[i])
-                                        detailTexture[i] = SkiaImageUtils.ResizeImageSolid(origBitmap, 16, 16);
-                                }
-
-                                // Save the decoded and resized texture to the cache
-                                using(SKImage image = SKImage.FromBitmap(detailTexture[i]))
-                                using(SKData encoded = image.Encode(SKEncodedImageFormat.Png, 100))
-                                {
-                                    // Cache a PNG copy of this terrain texture
-                                    AssetBase newAsset = new AssetBase
-                                    {
-                                        Data = encoded.ToArray(),
-                                        Description = "PNG",
-                                        Flags = AssetFlags.Collectable,
-                                        FullID = UUID.Zero,
-                                        ID = cacheName,
-                                        Local = true,
-                                        Name = String.Empty,
-                                        Temporary = true,
-                                        Type = (sbyte)AssetType.Unknown
-                                    };
-                                    newAsset.Metadata.ContentType = "image/png";
-                                    assetService.Store(newAsset);
+                                    m_log.Debug($"{LogHeader}: Failed to decode terrain texture {asset.ID}");
                                 }
                             }
                         }
@@ -198,12 +182,12 @@ namespace OpenSim.Region.CoreModules.World.Warp3DMap
                 }
 
                 #endregion Texture Fetching
-                if(averagetextureTerrain)
+                if (averagetextureTerrain)
                 {
-                    for(int t = 0; t < 4; t++)
+                    for (int t = 0; t < 4; t++)
                     {
                         usecolors = true;
-                        if(detailTexture[t] == null)
+                        if (detailTexture[t] == null)
                         {
                             mapColorsRed[t] = DEFAULT_TERRAIN_COLOR[t].Red;
                             mapColorsGreen[t] = DEFAULT_TERRAIN_COLOR[t].Green;
@@ -223,10 +207,10 @@ namespace OpenSim.Region.CoreModules.World.Warp3DMap
 
                         unsafe
                         {
-                            for(int y = 0; y < ylen; y += rowBytes)
+                            for (int y = 0; y < ylen; y += rowBytes)
                             {
                                 byte* ptrc = (byte*)pixelsAddr + y;
-                                for(int x = 0; x < detailTexture[t].Width; ++x, ptrc += 4)
+                                for (int x = 0; x < detailTexture[t].Width; ++x, ptrc += 4)
                                 {
                                     cB += ptrc[0];
                                     cG += ptrc[1];
@@ -252,19 +236,8 @@ namespace OpenSim.Region.CoreModules.World.Warp3DMap
 
                             // Create a solid color texture for this layer
                             detailTexture[i] = new SKBitmap(16, 16, SKColorType.Rgb888x, SKAlphaType.Opaque);
-                            using(SKCanvas canvas = new SKCanvas(detailTexture[i]))
-                            using(SKPaint paint = new SKPaint { Color = DEFAULT_TERRAIN_COLOR[i], Style = SKPaintStyle.Fill })
-                            {
-                                canvas.DrawRect(0, 0, 16, 16, paint);
-                            }
-                        }
-                        else
-                        {
-                            if(detailTexture[i].Width != 16 || detailTexture[i].Height != 16)
-                            {
-                                using(SKBitmap origBitmap = detailTexture[i])
-                                    detailTexture[i] = SkiaImageUtils.ResizeImageSolid(origBitmap, 16, 16);
-                            }
+                            using SKCanvas canvas = new SKCanvas(detailTexture[i]);
+                            canvas.Clear(DEFAULT_TERRAIN_COLOR[i]);
                         }
                     }
                 }
@@ -272,14 +245,14 @@ namespace OpenSim.Region.CoreModules.World.Warp3DMap
             else
             {
                 usecolors = true;
-                for(int t = 0; t < 4; t++)
+                for (int t = 0; t < 4; t++)
                 {
                     mapColorsRed[t] = DEFAULT_TERRAIN_COLOR[t].Red;
                     mapColorsGreen[t] = DEFAULT_TERRAIN_COLOR[t].Green;
                     mapColorsBlue[t] = DEFAULT_TERRAIN_COLOR[t].Blue;
                 }
             }
-            
+
             #region Layer Map
 
             float xFactor = terrain.Width / twidth;
@@ -289,7 +262,7 @@ namespace OpenSim.Region.CoreModules.World.Warp3DMap
 
             #region Texture Compositing
 
-            SKBitmap output = new SKBitmap(twidth, theight, SKColorType.Rgb888x, SKAlphaType.Opaque);
+            SKBitmap output = new(twidth, theight, SKColorType.Rgb888x, SKAlphaType.Opaque);
             IntPtr outputAddr = output.GetPixels();
             int outputStride = output.RowBytes;
 
@@ -306,7 +279,7 @@ namespace OpenSim.Region.CoreModules.World.Warp3DMap
             int l0;
             uint yglobalpos;
 
-            if(usecolors)
+            if (usecolors)
             {
                 float a;
                 float b;
@@ -314,14 +287,14 @@ namespace OpenSim.Region.CoreModules.World.Warp3DMap
                 unsafe
                 {
                     byte* ptrO;
-                    for(int y = 0; y < theight; ++y)
+                    for (int y = 0; y < theight; ++y)
                     {
                         pcty = y * invtheightMinus1;
                         ptrO = (byte*)outputAddr + y * outputStride;
                         ty = (int)(y * yFactor);
                         yglobalpos = (uint)ty + regionPositionY;
 
-                        for(int x = 0; x < twidth; ++x, ptrO += 4)
+                        for (int x = 0; x < twidth; ++x, ptrO += 4)
                         {
                             tx = (int)(x * xFactor);
                             pctx = x * invtwitdthMinus1;
@@ -411,7 +384,7 @@ namespace OpenSim.Region.CoreModules.World.Warp3DMap
                             aG = ptr[1];
                             aR = ptr[2];
 
-                            if(l0 >= 2)
+                            if (l0 >= 2)
                                 l0 = 3;
                             else
                                 l0++;
@@ -429,8 +402,8 @@ namespace OpenSim.Region.CoreModules.World.Warp3DMap
                     }
                 }
 
-                for(int i = 0; i < detailTexture.Length; i++)
-                    if(detailTexture[i] != null)
+                for (int i = 0; i < detailTexture.Length; i++)
+                    if (detailTexture[i] != null)
                         detailTexture[i].Dispose();
             }
 
@@ -453,7 +426,7 @@ namespace OpenSim.Region.CoreModules.World.Warp3DMap
 
             float heightRange = ImageUtils.Bilinear(heightRanges, pctX, pctY);
             heightRange = Utils.Clamp(heightRange, 0f, 255f);
-            if(heightRange == 0f)
+            if (heightRange == 0f)
                 return 0;
 
             // Generate two frequencies of perlin noise based on our global position

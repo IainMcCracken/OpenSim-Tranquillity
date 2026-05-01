@@ -471,20 +471,25 @@ public class MapImageService : IMapImageService
                         if (topLeft is not null) tempCanvas.DrawBitmap(topLeft, 0, 0);
                         if (topRight is not null) tempCanvas.DrawBitmap(topRight, IMAGE_WIDTH, 0);
 
-                        using SKBitmap newTile = SkiaImageUtils.OpaqueResize(tempBitmap, IMAGE_WIDTH, IMAGE_WIDTH);
-                        using SKData newTileData = newTile.Encode(SKEncodedImageFormat.Jpeg, JPEG_QUALITY);
-
-                        try
+                        if (SkiaImageUtils.TryLinearOpaqueResize(tempBitmap, IMAGE_WIDTH, IMAGE_WIDTH, out SKBitmap newTile))
                         {
-                            lock (m_FileAccessLock)
+                            using (newTile)
                             {
-                                using FileStream fs = File.Create(parentFile);
-                                newTileData.SaveTo(fs);
+                                using SKData newTileData = newTile.Encode(SKEncodedImageFormat.Jpeg, JPEG_QUALITY);
+
+                                try
+                                {
+                                    lock (m_FileAccessLock)
+                                    {
+                                        using FileStream fs = File.Create(parentFile);
+                                        newTileData.SaveTo(fs);
+                                    }
+                                }
+                                catch (Exception e)
+                                {
+                                    m_log.Warn($"{LogHeader}: Unable to save new zoom map tile {parentFile}. Reason: {e.Message}");
+                                }
                             }
-                        }
-                        catch (Exception e)
-                        {
-                            m_log.Warn($"{LogHeader}: Unable to save new zoom map tile {parentFile}. Reason: {e.Message}");
                         }
                     }
                     else

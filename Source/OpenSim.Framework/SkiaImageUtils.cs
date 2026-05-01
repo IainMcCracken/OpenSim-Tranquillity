@@ -135,7 +135,7 @@ public static class SkiaImageUtils
         {
             decoded = SKBitmapJ2kExtensions.FromJ2KBytes(inData);
         }
-        catch (InvalidOperationException e)
+        catch (InvalidOperationException)
         {
             // The given array of bytes is not a valid JPEG2000 image. Report failure.
             return false;
@@ -158,23 +158,17 @@ public static class SkiaImageUtils
 
         decoded = SKBitmap.Decode(inData);
 
-        return decoded is not null;
-    }
+        // SkiaSharp can return null if the binary data is not a recognized image. If it is recognized but the header is corrupt,
+        // it can produce a valid SKBitmap with zero dimensions. If it is corrupt later in the binary, it can return an SKBitmap
+        // with either no pixmap or malformed pixmap. All of this is silent, so we check for these eventualities here.
+        if ((decoded is null) || decoded.Width == 0 || decoded.Height == 0 || !decoded.ReadyToDraw)
+        {
+            decoded?.Dispose();
+            decoded = null;
+            return false;
+        }
 
-    /// <summary>
-    /// Do a simple opaque resize.
-    /// </summary>
-    /// <remarks>
-    /// The output color type is Bgra8888 and the alpha type is Opaque. The sampling is bilinear.
-    /// </remarks>
-    /// <param name="input"></param>
-    /// <param name="x"></param>
-    /// <param name="y"></param>
-    /// <returns>The new bitmap with the new size.</returns>
-    public static SKBitmap OpaqueResize(SKBitmap input, int x, int y)
-    {
-        if (input is null) return null;
-        return input.Resize(new SKImageInfo(x, y, SKColorType.Bgra8888, SKAlphaType.Opaque), new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.None));
+        return true;
     }
 
     /// <summary>
@@ -187,6 +181,33 @@ public static class SkiaImageUtils
         if (checkMe is null || checkMe.Length < 3) return true;
 
         return checkMe[0] != 0xFF || checkMe[1] != 0xD8 || checkMe[2] != 0xFF;
+    }
+
+    static readonly SKSamplingOptions lo_stdOptions = new(SKFilterMode.Linear, SKMipmapMode.None);
+
+    /// <summary>
+    /// Do a simple resize with bilinear interpolation, selectable color-type
+    /// </summary>
+    /// <param name="input"></param>
+    /// <param name="width"></param>
+    /// <param name="height"></param>
+    /// <param name="output"></param>
+    /// <param name="colorType"></param>
+    /// <returns></returns>
+    public static bool TryLinearOpaqueResize(SKBitmap input, int width, int height, out SKBitmap output, SKColorType colorType = SKColorType.Bgra8888)
+    {
+        SKImageInfo imgInfo = new(width, height, colorType, SKAlphaType.Opaque);
+
+        output = null;
+
+        if (input is null || width < 1 || height < 1)
+        {
+            return false;
+        }
+
+        output = input.Resize(imgInfo, lo_stdOptions);
+
+        return output is not null;
     }
 
     // ************************************************************
