@@ -203,16 +203,15 @@ namespace OpenSim.Region.CoreModules.ServiceConnectorsOut.MapImage
                 return;
             }
 
-            // New IMapImageGenerator returns an SKBitmap (SkiaSharp). Convert or pass through.
-            using (SKBitmap mapTile = tileGenerator.CreateMapTile())
-            {
-                // The MapImageModule will return a null if the user has chosen not to create map tiles and there
-                // is no static map tile.
-                if (mapTile == null)
-                    return;
+            using SKBitmap mapTile = tileGenerator.CreateMapTile();
 
-                UploadMapTile(scene, mapTile);
-            }
+            if (mapTile == null)
+                return;
+
+            // Help out the code below, especially varregions with the use of ExtractSubset.
+            mapTile.SetImmutable();
+
+            UploadMapTile(scene, mapTile);
         }
 
         /// <summary>
@@ -238,40 +237,39 @@ namespace OpenSim.Region.CoreModules.ServiceConnectorsOut.MapImage
             }
             else
             {
-                m_log.DebugFormat("{0} Upload {1} maptiles for {2}", LogHeader,
-                    (mapTile.Width * mapTile.Height) / (Constants.RegionSize * Constants.RegionSize),
-                    scene.Name);
+                // For varregions, we need to divide the full sized region image into 256x256 map tiles.
+                long sizeX = mapTile.Width / Constants.RegionSize;
+                long sizeY = mapTile.Height / Constants.RegionSize;
 
-                // For larger regions (varregion) we must cut the region image into legacy sized
-                //    pieces since that is how the maptile system works.
-                // Note the assumption that varregions are always a multiple of legacy size.
-                for (uint xx = 0; xx < (uint)mapTile.Width; xx += Constants.RegionSize)
+                m_log.Debug($"{LogHeader}: Upload {sizeX * sizeY} maptiles for {scene.Name}");
+
+                SKBitmap tile = new();
+
+                for (long tileX = 0; tileX < sizeX; tileX++)
                 {
-                    for (uint yy = 0; yy < (uint)mapTile.Height; yy += Constants.RegionSize)
+                    for (long tileY = 0; tileY < sizeY; tileY++)
                     {
-                        // Images are addressed from the upper left corner so have to do funny
-                        //     math to pick out the sub-tile since regions are numbered from
-                        //     the lower left.
-                        int left = (int)xx;
-                        int top = mapTile.Height - (int)yy - (int)Constants.RegionSize;
-                        int tileW = (int)Constants.RegionSize;
-                        int tileH = (int)Constants.RegionSize;
+                        int left = (int)(tileX * Constants.RegionSize);
+                        int right = (int)(left + Constants.RegionSize - 1);
+                        int top = (int)(tileY * Constants.RegionSize);
+                        int bottom = (int)(top + Constants.RegionSize - 1);
 
-                        SKRectI subset = new SKRectI(left, top, left + tileW, top + tileH);
-                        SKBitmap subMapTile = new SKBitmap();
-                        if (!mapTile.ExtractSubset(subMapTile, subset))
+                        // Remember, the bitmap uses graphic coordinates where Y increases down, but the grid map uses regular
+                        // math coordinates, where Y increases up.
+                        uint gridX = (uint)(scene.RegionInfo.RegionLocX + tileX);
+                        uint gridY = (uint)(scene.RegionInfo.RegionLocY - sizeY + tileY + 1);
+
+                        SKRectI tileRect = new(left, top, right, bottom);
+                        if (!mapTile.ExtractSubset(tile, tileRect))
                         {
-                            m_log.WarnFormat("{0} Failed to extract sub-tile at {1},{2}", LogHeader, left, top);
+                            m_log.Warn($"{LogHeader}: Failed to extract sub-tile at {left},{top}");
                             continue;
                         }
 
-                        if (!ConvertAndUploadMaptile(scene, subMapTile,
-                                                    scene.RegionInfo.RegionLocX + (xx / Constants.RegionSize),
-                                                    scene.RegionInfo.RegionLocY + (yy / Constants.RegionSize),
-                                                    scene.Name))
+                        if (!ConvertAndUploadMaptile(scene, tile, gridX, gridY, scene.Name))
                         {
-                            m_log.DebugFormat("{0} Upload maptileS for {1} aborted!", LogHeader, scene.Name);
-                            return; // abort rest;
+                            m_log.Debug($"{LogHeader}: Upload maptiles for {scene.Name} aborted");
+                            return;
                         }
                     }
                 }
@@ -281,35 +279,20 @@ namespace OpenSim.Region.CoreModules.ServiceConnectorsOut.MapImage
         // New SKBitmap-based upload path using SkiaSharp for JPEG encoding.
         private bool ConvertAndUploadMaptile(IScene scene, SKBitmap tileImage, uint locX, uint locY, string regionName)
         {
-            byte[] jpgData = Utils.EmptyBytes;
-
-            try
+            // Convert to JPEG (use 100% here, the map image service will be outoutting it at 80% to the maptiles directory).
+            if (!SkiaImageUtils.TryEncodeToJpeg(tileImage, 100, out byte[] jpgData))
             {
-                using (SKImage img = SKImage.FromBitmap(tileImage))
-                using (SKData data = img.Encode(SKEncodedImageFormat.Jpeg, 95))
-                {
-                    jpgData = data.ToArray();
-                }
-            }
-            catch (Exception e)
-            {
-                m_log.WarnFormat("{0} Failed encoding SKBitmap to JPEG for region {1}: {2}", LogHeader, regionName, e.Message);
+                m_log.Warn($"{LogHeader}: Tile encode to JPEG failed for region {regionName}");
                 return false;
             }
 
-            if (jpgData == Utils.EmptyBytes)
+            // Upload the image.
+            if (!m_MapService.AddMapTile((int)locX, (int)locY, jpgData, scene.RegionInfo.ScopeID, out string reason))
             {
-                m_log.WarnFormat("{0} Tile image generation failed for region {1}", LogHeader, regionName);
+                m_log.Debug($"{LogHeader}: Upload of tile for {regionName} at {locX},{locY} failed.");
                 return false;
             }
 
-            string reason = string.Empty;
-            if (!m_MapService.AddMapTile((int)locX, (int)locY, jpgData, scene.RegionInfo.ScopeID, out reason))
-            {
-                m_log.DebugFormat("{0} Unable to upload tile image for {1} at {2}-{3}: {4}", LogHeader,
-                    regionName, locX, locY, reason);
-                return false;
-            }
             return true;
         }
     }
