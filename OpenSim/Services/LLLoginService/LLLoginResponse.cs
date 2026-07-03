@@ -573,6 +573,13 @@ namespace OpenSim.Services.LLLoginService
                 if (ClassifiedFee != String.Empty)
                     responseData["classified_fee"] = ClassifiedFee;
 
+
+                // XXX IAIN
+                Hashtable voicecfgHash = new Hashtable();
+                voicecfgHash["VoiceServerType"] = "webrtc";
+                responseData["voice-config"] = voicecfgHash;
+
+
                 responseData["login"] = "true";
 
                 return responseData;
@@ -690,6 +697,11 @@ namespace OpenSim.Services.LLLoginService
                 }
 
                 map["login"] = OSD.FromString("true");
+
+                // XXX IAIN
+                OSDMap voicecfg = new OSDMap();
+                voicecfg["VoiceServerType"] = OSD.FromString("webrtc");
+                map["voice-config"] = WrapOSDMap(voicecfg);
 
                 return map;
             }
