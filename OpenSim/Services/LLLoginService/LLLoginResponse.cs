@@ -701,7 +701,8 @@ namespace OpenSim.Services.LLLoginService
                 // XXX IAIN
                 OSDMap voicecfg = new OSDMap();
                 voicecfg["VoiceServerType"] = OSD.FromString("webrtc");
-                map["voice-config"] = WrapOSDMap(voicecfg);
+                // map["voice-config"] = WrapOSDMap(voicecfg);
+                map["voice-config"] = voicecfg;
 
                 return map;
             }
