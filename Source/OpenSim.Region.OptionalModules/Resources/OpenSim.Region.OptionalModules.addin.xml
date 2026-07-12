@@ -23,7 +23,7 @@
         <RegionModule id="FriendsCommandModule" class="OpenSim.Region.OptionalModules.Avatar.Friends.FriendsCommandsModule" />
         <RegionModule id="AnimationsCommandModule" class="OpenSim.Region.OptionalModules.Avatar.SitStand.SitStandCommandModule" />
         <RegionModule id="FreeSwitchVoiceModule" class="OpenSim.Region.OptionalModules.Avatar.Voice.FreeSwitchVoice.FreeSwitchVoiceModule" />
-        <RegionModule id="VivoxVoiceModule" class="OpenSim.Region.OptionalModules.Avatar.Voice.VivoxVoice.VivoxVoiceModule" />
+        <!-- <RegionModule id="VivoxVoiceModule" class="OpenSim.Region.OptionalModules.Avatar.Voice.VivoxVoice.VivoxVoiceModule" /> -->
         <RegionModule id="GroupsMessagingModule" class="OpenSim.Region.OptionalModules.Avatar.XmlRpcGroups.GroupsMessagingModule" />
         <RegionModule id="GroupsModule" class="OpenSim.Region.OptionalModules.Avatar.XmlRpcGroups.GroupsModule" />
         <RegionModule id="XmlRpcGroupsServicesConnectorModule" class="OpenSim.Region.OptionalModules.Avatar.XmlRpcGroups.XmlRpcGroupsServicesConnectorModule" />

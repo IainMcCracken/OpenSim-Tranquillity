@@ -147,6 +147,9 @@ namespace WebRtcVoice
                         ret = pIn.AsLong();
                     }
                     break;
+                case OSDType.Long:
+                    ret = (pIn as OSDLong).AsLong();
+                    break;
             }
             return ret;
         }

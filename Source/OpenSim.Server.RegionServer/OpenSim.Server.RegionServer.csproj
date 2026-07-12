@@ -43,7 +43,7 @@
     <ProjectReference Include="../../Source/OpenSim.Services.EstateService/OpenSim.Services.EstateService.csproj" />
     <ProjectReference Include="../../Source/OpenSim.Services.ExperienceService/OpenSim.Services.ExperienceService.csproj" />
     <ProjectReference Include="../../Source/OpenSim.Services.FSAssetService/OpenSim.Services.FSAssetService.csproj" />
-    <ProjectReference Include="../../Source/OpenSim.Services.FreeswitchService/OpenSim.Services.FreeswitchService.csproj" />
+    <!-- <ProjectReference Include="../../Source/OpenSim.Services.FreeswitchService/OpenSim.Services.FreeswitchService.csproj" /> -->
     <ProjectReference Include="../../Source/OpenSim.Services.Friends/OpenSim.Services.FriendsService.csproj" />
     <ProjectReference Include="../../Source/OpenSim.Services.GridService/OpenSim.Services.GridService.csproj" />
     <ProjectReference Include="../../Source/OpenSim.Services.HypergridService/OpenSim.Services.HypergridService.csproj" />
@@ -74,6 +74,9 @@
     <ProjectReference Include="../../Source/OpenSim.Region.ScriptEngine.Shared/OpenSim.Region.ScriptEngine.Shared.csproj" />
     <ProjectReference Include="../../Source/OpenSim.Region.ScriptEngine.YEngine/OpenSim.Region.ScriptEngine.YEngine.csproj" />
     <ProjectReference Include="../../Addons/WebRtc/WebRtcVoiceRegionModule/WebRtcVoiceRegionModule.csproj" />
+    <ProjectReference Include="../../Addons/WebRtc/Janus/WebRtcJanusService.csproj" />
+    <ProjectReference Include="../../Addons/WebRtc/WebRtcVoice/WebRtcVoice.csproj" />
+    <ProjectReference Include="../../Addons/WebRtc/WebRtcVoiceServiceModule/WebRtcVoiceServiceModule.csproj" />
   </ItemGroup>
 
   <ItemGroup>

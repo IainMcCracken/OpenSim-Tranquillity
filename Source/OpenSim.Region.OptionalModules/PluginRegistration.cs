@@ -44,8 +44,8 @@ public class PluginRegistration : IPluginRegistryProvider
         RegisterByName(registry, "/OpenSim/RegionModules", "ConciergeModule", "OpenSim.Region.OptionalModules.Avatar.Concierge.ConciergeModule", "ConciergeModule");
         RegisterByName(registry, "/OpenSim/RegionModules", "FriendsCommandModule", "OpenSim.Region.OptionalModules.Avatar.Friends.FriendsCommandsModule", "FriendsCommandModule");
         RegisterByName(registry, "/OpenSim/RegionModules", "AnimationsCommandModule", "OpenSim.Region.OptionalModules.Avatar.SitStand.SitStandCommandModule", "AnimationsCommandModule");
-        RegisterByName(registry, "/OpenSim/RegionModules", "FreeSwitchVoiceModule", "OpenSim.Region.OptionalModules.Avatar.Voice.FreeSwitchVoice.FreeSwitchVoiceModule", "FreeSwitchVoiceModule");
-        RegisterByName(registry, "/OpenSim/RegionModules", "VivoxVoiceModule", "OpenSim.Region.OptionalModules.Avatar.Voice.VivoxVoice.VivoxVoiceModule", "VivoxVoiceModule");
+        // RegisterByName(registry, "/OpenSim/RegionModules", "FreeSwitchVoiceModule", "OpenSim.Region.OptionalModules.Avatar.Voice.FreeSwitchVoice.FreeSwitchVoiceModule", "FreeSwitchVoiceModule");
+        // RegisterByName(registry, "/OpenSim/RegionModules", "VivoxVoiceModule", "OpenSim.Region.OptionalModules.Avatar.Voice.VivoxVoice.VivoxVoiceModule", "VivoxVoiceModule");
         RegisterByName(registry, "/OpenSim/RegionModules", "GroupsMessagingModule", "OpenSim.Region.OptionalModules.Avatar.XmlRpcGroups.GroupsMessagingModule", "GroupsMessagingModule");
         RegisterByName(registry, "/OpenSim/RegionModules", "GroupsModule", "OpenSim.Region.OptionalModules.Avatar.XmlRpcGroups.GroupsModule", "GroupsModule");
         RegisterByName(registry, "/OpenSim/RegionModules", "XmlRpcGroupsServicesConnectorModule", "OpenSim.Region.OptionalModules.Avatar.XmlRpcGroups.XmlRpcGroupsServicesConnectorModule", "XmlRpcGroupsServicesConnectorModule");
