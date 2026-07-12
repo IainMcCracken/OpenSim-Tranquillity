@@ -10,11 +10,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using System;
-using System.IO;
 using System.Net;
-using System.Text;
-using System.Collections.Generic;
 using System.Reflection;
 
 using OpenSim.Framework;
@@ -174,13 +170,6 @@ namespace WebRtcVoice
                     {
                         VoiceSignalingRequest(httpRequest, httpResponse, agentID, scene);
                     }));
-
-            caps.RegisterSimpleHandler("ParcelVoiceInfoRequest",
-                    new SimpleStreamHandler("/" + UUID.Random(), (IOSHttpRequest httpRequest, IOSHttpResponse httpResponse) =>
-                    {
-                        ParcelVoiceInfoRequest(httpRequest, httpResponse, agentID, scene);
-                    }));
-
         }
 
         /// <summary>
@@ -315,161 +304,5 @@ namespace WebRtcVoice
             response.RawBuffer = Util.UTF8.GetBytes("<llsd><undef /></llsd>");
             return;
         }
-
-        // NOTE NOTE!! This is code from the FreeSwitch module. It is not clear if this is correct for WebRtc.
-        /// <summary>
-        /// Callback for a client request for ParcelVoiceInfo
-        /// </summary>
-        /// <param name="scene">current scene object of the client</param>
-        /// <param name="request"></param>
-        /// <param name="path"></param>
-        /// <param name="param"></param>
-        /// <param name="agentID"></param>
-        /// <param name="caps"></param>
-        /// <returns></returns>
-        public void ParcelVoiceInfoRequest(IOSHttpRequest request, IOSHttpResponse response, UUID agentID, Scene scene)
-        {
-            if (request.HttpMethod != "POST")
-            {
-                response.StatusCode = (int)HttpStatusCode.NotFound;
-                return;
-            }
-
-            response.StatusCode = (int)HttpStatusCode.OK;
-
-            m_log.DebugFormat(
-                "{0}[PARCELVOICE]: ParcelVoiceInfoRequest() on {1} for {2}",
-                logHeader, scene.RegionInfo.RegionName, agentID);
-
-            ScenePresence avatar = scene.GetScenePresence(agentID);
-            if(avatar == null)
-            {
-                response.RawBuffer = Util.UTF8.GetBytes("<llsd>undef</llsd>");
-                return;
-            }
-
-            string avatarName = avatar.Name;
-
-            // - check whether we have a region channel in our cache
-            // - if not:
-            //       create it and cache it
-            // - send it to the client
-            // - send channel_uri: as "sip:regionID@m_sipDomain"
-            try
-            {
-                string channelUri;
-
-                if (null == scene.LandChannel)
-                {
-                    m_log.ErrorFormat("region \"{0}\": avatar \"{1}\": land data not yet available",
-                                                      scene.RegionInfo.RegionName, avatarName);
-                    response.RawBuffer = Util.UTF8.GetBytes("<llsd>undef</llsd>");
-                    return;
-                }
-
-                // get channel_uri: check first whether estate
-                // settings allow voice, then whether parcel allows
-                // voice, if all do retrieve or obtain the parcel
-                // voice channel
-                LandData land = scene.GetLandData(avatar.AbsolutePosition);
-
-                // TODO: EstateSettings don't seem to get propagated...
-                 if (!scene.RegionInfo.EstateSettings.AllowVoice)
-                 {
-                     m_log.DebugFormat("{0}[PARCELVOICE]: region \"{1}\": voice not enabled in estate settings",
-                                       logHeader, scene.RegionInfo.RegionName);
-                    channelUri = String.Empty;
-                }
-                else
-
-                if (!scene.RegionInfo.EstateSettings.TaxFree && (land.Flags & (uint)ParcelFlags.AllowVoiceChat) == 0)
-                {
-                    channelUri = String.Empty;
-                }
-                else
-                {
-                    channelUri = ChannelUri(scene, land);
-                }
-
-                // fast foward encode
-                osUTF8 lsl = LLSDxmlEncode2.Start(512);
-                LLSDxmlEncode2.AddMap(lsl);
-                LLSDxmlEncode2.AddElem("parcel_local_id", land.LocalID, lsl);
-                LLSDxmlEncode2.AddElem("region_name", scene.Name, lsl);
-                LLSDxmlEncode2.AddMap("voice_credentials", lsl);
-                LLSDxmlEncode2.AddElem("channel_uri", channelUri, lsl);
-                //LLSDxmlEncode2.AddElem("channel_credentials", channel_credentials, lsl);
-                LLSDxmlEncode2.AddEndMap(lsl);
-                LLSDxmlEncode2.AddEndMap(lsl);
-
-                response.RawBuffer= LLSDxmlEncode2.EndToBytes(lsl);
-            }
-            catch (Exception e)
-            {
-                m_log.ErrorFormat("{0}[PARCELVOICE]: region \"{1}\": avatar \"{2}\": {3}, retry later",
-                                  logHeader, scene.RegionInfo.RegionName, avatarName, e.Message);
-                m_log.DebugFormat("{0}[PARCELVOICE]: region \"{1}\": avatar \"{2}\": {3} failed",
-                                  logHeader, scene.RegionInfo.RegionName, avatarName, e.ToString());
-
-                response.RawBuffer = Util.UTF8.GetBytes("<llsd>undef</llsd>");
-            }
-        }
-
-        // NOTE NOTE!! This is code from the FreeSwitch module. It is not clear if this is correct for WebRtc.
-        // Not sure what this Uri is for. Is this FreeSwitch specific?
-        // TODO: is this useful for WebRtc?
-        private string ChannelUri(Scene scene, LandData land)
-        {
-            string channelUri = null;
-
-            string landUUID;
-            string landName;
-
-            // Create parcel voice channel. If no parcel exists, then the voice channel ID is the same
-            // as the directory ID. Otherwise, it reflects the parcel's ID.
-
-            lock (m_ParcelAddress)
-            {
-                if (m_ParcelAddress.ContainsKey(land.GlobalID.ToString()))
-                {
-                    m_log.DebugFormat("{0}: parcel id {1}: using sip address {2}",
-                                      logHeader, land.GlobalID, m_ParcelAddress[land.GlobalID.ToString()]);
-                    return m_ParcelAddress[land.GlobalID.ToString()];
-                }
-            }
-
-            if (land.LocalID != 1 && (land.Flags & (uint)ParcelFlags.UseEstateVoiceChan) == 0)
-            {
-                landName = String.Format("{0}:{1}", scene.RegionInfo.RegionName, land.Name);
-                landUUID = land.GlobalID.ToString();
-                m_log.DebugFormat("{0}: Region:Parcel \"{1}\": parcel id {2}: using channel name {3}",
-                                  logHeader, landName, land.LocalID, landUUID);
-            }
-            else
-            {
-                landName = String.Format("{0}:{1}", scene.RegionInfo.RegionName, scene.RegionInfo.RegionName);
-                landUUID = scene.RegionInfo.RegionID.ToString();
-                m_log.DebugFormat("{0}: Region:Parcel \"{1}\": parcel id {2}: using channel name {3}",
-                                  logHeader, landName, land.LocalID, landUUID);
-            }
-
-            // slvoice handles the sip address differently if it begins with confctl, hiding it from the user in
-            // the friends list. however it also disables the personal speech indicators as well unless some
-            // siren14-3d codec magic happens. we dont have siren143d so we'll settle for the personal speech indicator.
-            channelUri = String.Format("sip:conf-{0}@{1}",
-                     "x" + Convert.ToBase64String(Encoding.ASCII.GetBytes(landUUID)),
-                     /*m_freeSwitchRealm*/ "webRTC");
-
-            lock (m_ParcelAddress)
-            {
-                if (!m_ParcelAddress.ContainsKey(land.GlobalID.ToString()))
-                {
-                    m_ParcelAddress.Add(land.GlobalID.ToString(),channelUri);
-                }
-            }
-
-            return channelUri;
-        }
-
     }
 }
