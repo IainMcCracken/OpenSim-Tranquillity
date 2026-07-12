@@ -54,6 +54,9 @@
     <ProjectReference Include="../../Source/OpenSim.Services.SimulationService/OpenSim.Services.SimulationService.csproj" />
     <ProjectReference Include="../../Source/OpenSim.Services.UserAccountService/OpenSim.Services.UserAccountService.csproj" />
     <ProjectReference Include="../../Source/OpenSim.Services.UserProfilesService/OpenSim.Services.UserProfilesService.csproj" />
+    <ProjectReference Include="../../Addons/WebRtc/Janus/WebRtcJanusService.csproj" />
+    <ProjectReference Include="../../Addons/WebRtc/WebRtcVoice/WebRtcVoice.csproj" />
+    <ProjectReference Include="../../Addons/WebRtc/WebRtcVoiceServiceModule/WebRtcVoiceServiceModule.csproj" />
   </ItemGroup>
 
   <ItemGroup>

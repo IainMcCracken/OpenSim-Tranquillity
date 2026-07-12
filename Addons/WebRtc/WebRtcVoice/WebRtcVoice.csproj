@@ -15,10 +15,10 @@
     <ProjectReference Include="../../../Source/OpenSim.Framework.Console/OpenSim.Framework.Console.csproj" />
     <ProjectReference Include="../../../Source/OpenSim.Framework.Servers.HttpServer/OpenSim.Framework.Servers.HttpServer.csproj" />
     <ProjectReference Include="../../../Source/OpenSim.Server.Base/OpenSim.Server.Base.csproj" />
+    <ProjectReference Include="../../../Source/OpenSim.Server.Handlers/OpenSim.Server.Handlers.csproj" />
     <ProjectReference Include="../../../Source/OpenSim.Services.Base/OpenSim.Services.Base.csproj" />
     <ProjectReference Include="../../../Source/OpenSim.Services.Connectors/OpenSim.Services.Connectors.csproj" />
     <ProjectReference Include="../../../Source/OpenSim.Services.Interfaces/OpenSim.Services.Interfaces.csproj" />
-    <ProjectReference Include="../../../Addons/os-webrtc-janus/WebRtcVoice/WebRtcVoice.csproj" />
   </ItemGroup>
 
   <ItemGroup>
