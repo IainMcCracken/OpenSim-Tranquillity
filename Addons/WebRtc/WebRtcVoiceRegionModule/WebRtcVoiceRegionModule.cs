@@ -184,30 +184,78 @@ namespace WebRtcVoice
         /// <returns></returns>
         public void ProvisionVoiceAccountRequest(IOSHttpRequest request, IOSHttpResponse response, UUID agentID, Scene scene)
         {
+            response.StatusCode = (int)HttpStatusCode.BadRequest;
+
             if(request.HttpMethod != "POST")
             {
-                m_log.DebugFormat("[{0}][ProvisionVoice]: Not a POST request. Agent={1}", logHeader, agentID.ToString());
+                m_log.ErrorFormat("[{0}][ProvisionVoice]: Not a POST request. Agent={1}", logHeader, agentID.ToString());
                 response.StatusCode = (int)HttpStatusCode.NotFound;
                 return;
             }
 
-            // Deserialize the request. Convert the LLSDXml to OSD for our use
-            OSDMap map = null;
-            using (Stream inputStream = request.InputStream)
+            if (request.InputStream.Length == 0)
             {
-                if (inputStream.Length > 0)
-                {
-                    OSD tmp = OSDParser.DeserializeLLSDXml(inputStream);
-                    if (_MessageDetails) m_log.DebugFormat("{0}[ProvisionVoice]: Request: {1}", logHeader, tmp.ToString());
-                    map = tmp as OSDMap;
-                }
+                m_log.Error($"{logHeader} [ProvisionVoice] Request body is empty. Agent {agentID}");
+                return;
             }
 
-            if (map is null)
+            if (OSDParser.DeserializeLLSDXml(request.InputStream) is not OSDMap map)
             {
-                m_log.ErrorFormat("{0}[ProvisionVoice]: No request data found. Agent={1}", logHeader, agentID.ToString());
-                response.StatusCode = (int)HttpStatusCode.NoContent;
+                m_log.Error($"{logHeader} [ProvisionVoice] Body was not LLSD. Agent {agentID}");
                 return;
+            }
+
+            if (map["voice_server_type"] is not OSDString vstype)
+            {
+                m_log.Error($"{logHeader} [ProvisionVoice] Voice server type is missing. Agent {agentID}");
+                return;
+            }
+
+            if (vstype != "webrtc")
+            {
+                m_log.Error($"{logHeader} [ProvisionVoice] Voice server type is wrong in the request. Agent {agentID} Request {map}");
+                response.StatusCode = (int)HttpStatusCode.Gone;
+                return;
+            }
+
+            if (map["jsep"] is OSDMap jsep)
+            {
+                if (map["channel_type"] is OSDString chanType)
+                {
+                    if (chanType == "multiagent")
+                    {
+                        m_log.Info($"{logHeader} [ProvisionVoice] Got a provision request for IM. Agent {agentID}");
+                        response.StatusCode = (int)HttpStatusCode.NotFound;
+                        return;
+                    }
+                    else if (chanType == "local")
+                    {
+                        if (map["parcel_local_id"] is OSDInteger plid)
+                        {
+                            m_log.Info($"{logHeader} [ProvisionVoice] Got a provision for parcel {plid} voice. Agent {agentID}");
+                        }
+                        else
+                        {
+                            m_log.Info($"{logHeader} [ProvisionVoice] Got a provision for Estate voice. Agent {agentID}");
+                        }
+                    }
+                }
+            }
+            else
+            {
+                if (map["logout"] is OSDBoolean isLogout)
+                {
+                    if (isLogout)
+                    {
+                        string logoutSession = map["viewer_session"].AsString();
+                        m_log.Info($"{logHeader} [ProvisionVoice] Got a logout. Agent {agentID} Session ID: {logoutSession}");
+                    }
+                    else
+                    {
+                        m_log.Error($"{logHeader} [ProvisionVoice] Got a false logout? Agent {agentID}");
+                        return;
+                    }
+                }
             }
 
             // Get the voice service. If it doesn't exist, return an error.
@@ -215,26 +263,11 @@ namespace WebRtcVoice
             if (voiceService is null)
             {
                 m_log.ErrorFormat("{0}[ProvisionVoice]: avatar \"{1}\": no voice service", logHeader, agentID);
-                response.StatusCode = (int)HttpStatusCode.NotFound;
                 return;
-            }
-
-            // Make sure the request is for WebRtc voice
-            if (map.TryGetValue("voice_server_type", out OSD vstosd))
-            {
-                if (vstosd is OSDString vst && !((string)vst).Equals("webrtc", StringComparison.OrdinalIgnoreCase))
-                {
-                    m_log.WarnFormat("{0}[ProvisionVoice]: voice_server_type is not 'webrtc'. Request: {1}", logHeader, map.ToString());
-                    response.StatusCode = (int)HttpStatusCode.NotFound;
-                    // response.RawBuffer = Util.UTF8.GetBytes("<llsd><undef /></llsd>");
-                    return;
-                }
             }
 
             // The checks passed. Send the request to the voice service.
             OSDMap resp = voiceService.ProvisionVoiceAccountRequest(map, agentID, scene.RegionInfo.RegionID).Result;
-
-            if (_MessageDetails) m_log.DebugFormat("{0}[ProvisionVoice]: response: {1}", logHeader, resp.ToString());
 
             // TODO: check for errors and package the response
 
@@ -255,27 +288,20 @@ namespace WebRtcVoice
                 return;
             }
 
-            // Deserialize the request. Convert the LLSDXml to OSD for our use
-            OSDMap map = null;
-            using (Stream inputStream = request.InputStream)
-            {
-                if (inputStream.Length > 0)
-                {
-                    OSD tmp = OSDParser.DeserializeLLSDXml(inputStream);
-                    if (_MessageDetails) m_log.DebugFormat("{0}[VoiceSignalingRequest]: Request: {1}", logHeader, tmp.ToString());
+            byte[] stuff = new byte[request.InputStream.Length];
+            request.InputStream.ReadExactly(stuff, 0, (int)request.InputStream.Length);
+            string llsdBody = System.Text.Encoding.UTF8.GetString(stuff);
+            m_log.Info($"{logHeader} [ProvisionVoice] LLSD is \n{llsdBody}");
 
-                    if (tmp is OSDMap)
-                    {
-                        map = (OSDMap)tmp;
-                    }
-                }
-            }
-            if (map is null)
+            request.InputStream.Seek(0, SeekOrigin.Begin);
+
+
+            if (OSDParser.DeserializeLLSDXml(request.InputStream) is not OSDMap map)
             {
-                m_log.ErrorFormat("{0}[VoiceSignalingRequest]: No request data found. Agent={1}", logHeader, agentID.ToString());
-                response.StatusCode = (int)HttpStatusCode.NoContent;
+                m_log.Error($"{logHeader} [ICE Trickle] no body from agent {agentID}");
                 return;
             }
+
 
             // Make sure the request is for WebRTC voice
             if (map.TryGetValue("voice_server_type", out OSD vstosd))
