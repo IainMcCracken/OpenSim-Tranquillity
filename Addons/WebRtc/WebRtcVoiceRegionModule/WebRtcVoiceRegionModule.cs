@@ -288,14 +288,6 @@ namespace WebRtcVoice
                 return;
             }
 
-            byte[] stuff = new byte[request.InputStream.Length];
-            request.InputStream.ReadExactly(stuff, 0, (int)request.InputStream.Length);
-            string llsdBody = System.Text.Encoding.UTF8.GetString(stuff);
-            m_log.Info($"{logHeader} [ProvisionVoice] LLSD is \n{llsdBody}");
-
-            request.InputStream.Seek(0, SeekOrigin.Begin);
-
-
             if (OSDParser.DeserializeLLSDXml(request.InputStream) is not OSDMap map)
             {
                 m_log.Error($"{logHeader} [ICE Trickle] no body from agent {agentID}");
